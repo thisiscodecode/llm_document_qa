@@ -15,26 +15,24 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
 
 
-llm = ChatOpenAI(
-    model=OPENROUTER_MODEL,
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-)
+def _get_llm():
+    """Create the LLM client only when configuration is available."""
+    if not OPENROUTER_MODEL or not OPENROUTER_API_KEY:
+        return None
+
+    return ChatOpenAI(
+        model=OPENROUTER_MODEL,
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+    )
 
 
 def tokenize(text):
-    """
-    Convert text into lowercase tokens.
-    Used by BM25 retrieval.
-    """
+    """Convert text into lowercase tokens used by BM25 retrieval."""
     return re.findall(r"\b\w+\b", text.lower())
 
 
 def retrieve_relevant_chunks_simple(question, limit=3):
-    """
-    Simple keyword retrieval.
-    This was the original retrieval method.
-    """
     chunks = DocumentChunk.objects.all()
     scored_chunks = []
 
@@ -53,10 +51,7 @@ def retrieve_relevant_chunks_simple(question, limit=3):
 
     scored_chunks.sort(reverse=True, key=lambda x: x[0])
 
-    return [
-        chunk
-        for score, chunk in scored_chunks[:limit]
-    ]
+    return [chunk for score, chunk in scored_chunks[:limit]]
 
 
 def retrieve_relevant_chunks_bm25(question, limit=3):
@@ -64,59 +59,31 @@ def retrieve_relevant_chunks_bm25(question, limit=3):
     if not chunks:
         return []
 
-    # Tokenize each chunk
     tokenized_chunks = [tokenize(c.content) for c in chunks]
-
-    # BM25 instance
     bm25 = BM25Okapi(tokenized_chunks)
-
-    # Tokenize question
     tokenized_question = tokenize(question)
-
-    # Get scores
     scores = bm25.get_scores(tokenized_question)
-
-    # Pair scores with chunks
     scored_chunks = list(zip(scores, chunks))
-
-    # Sort by score descending
     scored_chunks.sort(key=lambda x: x[0], reverse=True)
 
-    # Return top N chunks, even if score is low (optional: filter with score > 0)
-    top_chunks = [chunk for score, chunk in scored_chunks[:limit]]
-    
-    return top_chunks
+    return [chunk for score, chunk in scored_chunks[:limit]]
 
 
 def retrieve_relevant_chunks(question, search_method="simple", limit=3):
-    """
-    Choose retrieval method.
-
-    simple → keyword matching
-    bm25   → IR / BM25 search
-    """
     if search_method == "bm25":
-        return retrieve_relevant_chunks_bm25(
-            question=question,
-            limit=limit
-        )
+        return retrieve_relevant_chunks_bm25(question=question, limit=limit)
 
-    return retrieve_relevant_chunks_simple(
-        question=question,
-        limit=limit
-    )
+    return retrieve_relevant_chunks_simple(question=question, limit=limit)
 
 
 def generate_answer(question, search_method="simple"):
     relevant_chunks = retrieve_relevant_chunks(
         question=question,
         search_method=search_method,
-        limit=3
+        limit=3,
     )
 
-    context = "\n\n".join(
-        [chunk.content for chunk in relevant_chunks]
-    )
+    context = "\n\n".join([chunk.content for chunk in relevant_chunks])
 
     if not context:
         return {
@@ -125,11 +92,19 @@ def generate_answer(question, search_method="simple"):
             "search_method": search_method,
         }
 
+    llm = _get_llm()
+    if llm is None:
+        return {
+            "answer": "LLM service error: OPENROUTER_API_KEY and OPENROUTER_MODEL must be set.",
+            "context": context,
+            "search_method": search_method,
+        }
+
     prompt = f"""
 Answer the question using ONLY the provided context.
 
 If the answer is not in the context, say:
-"I could not find the answer in the uploaded documents."
+\"I could not find the answer in the uploaded documents.\"
 
 Retrieval method:
 {search_method}
