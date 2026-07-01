@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Document QA - Architecture & Call Graph</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+*{margin:0;padding:0;box-sizing:border-box;}
+
+body{
+  background:#0a0a0a;
+  color:#e0e0e0;
+  font-family:'JetBrains Mono',monospace;
+  padding:40px 20px;
+  min-height:100vh;
+}
+
+.container{max-width:1200px;margin:0 auto;}
+
+h1{
+  text-align:center;
+  color:#ffb000;
+  font-size:22px;
+  margin-bottom:8px;
+  letter-spacing:3px;
+}
+
+.subtitle{
+  text-align:center;
+  color:#666;
+  font-size:12px;
+  margin-bottom:40px;
+  letter-spacing:1px;
+}
+
+.graph{display:flex;flex-direction:column;gap:40px;}
+
+.section{
+  background:#111;
+  border:1px solid #222;
+  border-radius:8px;
+  padding:24px;
+  position:relative;
+  overflow:hidden;
+}
+
+.section::before{
+  content:'';
+  position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,#ffb000,transparent);
+}
+
+.section-title{
+  color:#ffb000;
+  font-size:14px;
+  font-weight:700;
+  margin-bottom:20px;
+  padding-bottom:12px;
+  border-bottom:1px solid #222;
+  letter-spacing:2px;
+  display:flex;align-items:center;gap:10px;
+}
+
+.section-title .icon{font-size:16px;}
+
+.columns{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+@media(max-width:768px){.columns{grid-template-columns:1fr;}}
+
+.box{
+  background:#0d0d0d;
+  border:1px solid #222;
+  border-radius:6px;
+  padding:16px;
+  transition:border-color 0.2s;
+}
+
+.box:hover{border-color:#333;}
+
+.box-title{
+  color:#ffd166;
+  font-size:12px;
+  font-weight:700;
+  margin-bottom:14px;
+  padding-bottom:8px;
+  border-bottom:1px solid #1a1a1a;
+  letter-spacing:1px;
+}
+
+.item{
+  display:flex;align-items:center;gap:8px;
+  margin-bottom:8px;font-size:11px;
+  line-height:1.4;
+}
+
+.item-dot{
+  width:5px;height:5px;
+  background:#ffb000;border-radius:50%;
+  flex-shrink:0;
+}
+
+.item-name{color:#ffd166;font-weight:700;}
+.item-type{color:#555;font-size:10px;}
+.item-desc{color:#888;}
+
+.endpoint{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 12px;
+  background:#0d0d0d;
+  border:1px solid #222;
+  border-radius:4px;
+  margin-bottom:8px;
+  font-size:11px;
+  transition:all 0.2s;
+}
+
+.endpoint:hover{border-color:#444;background:#111;}
+
+.method{
+  padding:3px 8px;border-radius:3px;
+  font-size:9px;font-weight:700;
+  letter-spacing:0.5px;flex-shrink:0;
+  min-width:42px;text-align:center;
+}
+
+.method-get{background:#1a3a1a;color:#5ad36b;border:1px solid #2a5a2a;}
+.method-post{background:#1a2a3a;color:#667eea;border:1px solid #2a3a5a;}
+.method-delete{background:#3a1a1a;color:#ff4433;border:1px solid #5a2a2a;}
+
+.endpoint-path{color:#ffd166;font-weight:700;flex:1;}
+.endpoint-view{color:#666;font-size:10px;}
+
+.flow{display:flex;flex-direction:column;gap:4px;}
+
+.step{
+  display:flex;align-items:flex-start;gap:14px;
+  padding:12px;background:#0d0d0d;
+  border:1px solid #1a1a1a;border-radius:6px;
+  transition:border-color 0.2s;
+}
+
+.step:hover{border-color:#333;}
+
+.step-num{
+  background:#ffb000;color:#000;
+  width:24px;height:24px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:700;flex-shrink:0;
+}
+
+.step-content{flex:1;}
+
+.step-label{
+  color:#5ad36b;font-size:11px;font-weight:700;
+  margin-bottom:4px;
+}
+
+.step-file{color:#444;font-size:9px;margin-bottom:4px;}
+
+.step-detail{color:#888;font-size:10px;line-height:1.5;}
+
+.arrow{
+  color:#333;font-size:14px;
+  margin-left:10px;padding:2px 0;
+}
+
+.code{
+  background:#0a0d0a;border:1px solid #1a1a1a;
+  border-radius:4px;padding:14px;
+  font-size:10px;color:#888;
+  line-height:1.7;overflow-x:auto;
+}
+
+.code .kw{color:#ff4433;}
+.code .fn{color:#5ad36b;}
+.code .str{color:#ffd166;}
+.code .cm{color:#444;}
+.code .num{color:#667eea;}
+
+.tag{
+  display:inline-block;padding:2px 8px;
+  border-radius:3px;font-size:9px;
+  margin:2px;background:#1a1a1a;
+  border:1px solid #333;color:#888;
+}
+
+.tag-new{background:#1a2a1a;border-color:#2a4a2a;color:#5ad36b;}
+.tag-improved{background:#2a2a1a;border-color:#4a4a2a;color:#ffd166;}
+.tag-warning{background:#2a1a1a;border-color:#4a2a2a;color:#ff6b6b;}
+
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;}
+@media(max-width:900px){.grid-3{grid-template-columns:1fr;}}
+
+.status-badge{
+  display:inline-block;padding:2px 6px;
+  border-radius:3px;font-size:9px;
+  font-weight:700;
+}
+
+.status-ready{background:#1a3a1a;color:#5ad36b;}
+.status-processing{background:#2a2a1a;color:#ffd166;}
+.status-failed{background:#3a1a1a;color:#ff4433;}
+.status-uploaded{background:#1a1a2a;color:#667eea;}
+
+.arch-diagram{
+  background:#0a0a0a;border:1px solid #222;
+  border-radius:8px;padding:30px;
+  text-align:center;font-size:11px;
+  line-height:2;
+}
+
+.arch-box{
+  display:inline-block;padding:8px 16px;
+  background:#111;border:1px solid #333;
+  border-radius:4px;margin:4px;
+  color:#ffd166;font-weight:700;
+}
+
+.arch-arrow{color:#555;margin:0 8px;}
+
+.footer{
+  text-align:center;margin-top:40px;
+  padding-top:20px;border-top:1px solid #222;
+  color:#444;font-size:10px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>LLM DOCUMENT QA SYSTEM</h1>
+<div class="subtitle">Architecture & Call Graph - Enhanced RAG Pipeline (v2)</div>
+
+<div class="graph">
+
+<!-- ARCHITECTURE OVERVIEW -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> ARCHITECTURE OVERVIEW</div>
+  <div class="arch-diagram">
+    <div class="arch-box">User</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Frontend (RAG-OS)</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Django API</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Services Layer</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">LLM (OpenRouter)</div>
+    <br><br>
+    <div class="arch-box">Upload</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Validate</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Create Doc</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Background Thread</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Extract + Chunk</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Build Index</div>
+    <br><br>
+    <div class="arch-box">Question</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Hybrid Retrieve</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Rerank</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Context + Sources</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">LLM</div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box">Answer</div>
+  </div>
+</div>
+
+<!-- API ENDPOINTS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> API ENDPOINTS</div>
+  <div class="columns">
+    <div>
+      <div class="box-title">Page Routes</div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/</span>
+        <span class="endpoint-view">index()</span>
+      </div>
+    </div>
+    <div>
+      <div class="box-title">Document API</div>
+      <div class="endpoint">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/upload/</span>
+        <span class="endpoint-view">upload_document() - async</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/documents/</span>
+        <span class="endpoint-view">list_documents()</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-delete">DEL</span>
+        <span class="endpoint-path">/documents/:id/delete/</span>
+        <span class="endpoint-view">delete_document()</span>
+      </div>
+    </div>
+    <div>
+      <div class="box-title">Question API</div>
+      <div class="endpoint">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/ask/</span>
+        <span class="endpoint-view">AskQuestionAPIView</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/history/</span>
+        <span class="endpoint-view">QuestionHistoryListAPIView</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-delete">DEL</span>
+        <span class="endpoint-path">/api/history/:id/delete/</span>
+        <span class="endpoint-view">delete_history()</span>
+      </div>
+    </div>
+    <div>
+      <div class="box-title">Session API</div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/sessions/</span>
+        <span class="endpoint-view">list_sessions()</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-delete">DEL</span>
+        <span class="endpoint-path">/api/sessions/:id/delete/</span>
+        <span class="endpoint-view">delete_session()</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/evaluate/</span>
+        <span class="endpoint-view">evaluate()</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/compare/</span>
+        <span class="endpoint-view">compare_methods()</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- UPLOAD FLOW -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> UPLOAD FLOW (Async)</div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-label">Frontend: uploadFile()</div>
+        <div class="step-file">templates/index.html</div>
+        <div class="step-detail">Sends .docx/.pdf via FormData to /upload/</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-label">upload_document()</div>
+        <div class="step-file">documents/views.py</div>
+        <div class="step-detail">Validates file, creates Document(status='uploaded'), returns immediately</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-label">process_document_async()</div>
+        <div class="step-file">documents/processing.py</div>
+        <div class="step-detail">Spawns background thread for processing</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-label">process_document() [background]</div>
+        <div class="step-file">documents/processing.py</div>
+        <div class="step-detail">Sets status='processing', extracts text with page numbers</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-label">extract_text()</div>
+        <div class="step-file">documents/processing.py</div>
+        <div class="step-detail">
+          .docx &rarr; python-docx (heading-aware pages)<br>
+          .pdf &rarr; PyPDF2 (page-by-page extraction)
+        </div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-label">create_chunks()</div>
+        <div class="step-file">documents/processing.py</div>
+        <div class="step-detail">1000-char chunks, 150-char overlap, page_number preserved, bulk_create()</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">7</div>
+      <div class="step-content">
+        <div class="step-label">rebuild_vector_index()</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">Generates embeddings, builds FAISS index, saves to vector_indexes/</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">8</div>
+      <div class="step-content">
+        <div class="step-label">Status Update</div>
+        <div class="step-file">documents/models.py</div>
+        <div class="step-detail">status='ready', processed_at=now() OR status='failed', error_message=...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- QUERY FLOW -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> QUERY FLOW (RAG Pipeline)</div>
+  <div class="flow">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-label">Frontend: submitQuery()</div>
+        <div class="step-file">templates/index.html</div>
+        <div class="step-detail">Sends {question, search_method, document_ids, session_id} to /api/ask/</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-label">AskQuestionAPIView.post()</div>
+        <div class="step-file">documents/views.py</div>
+        <div class="step-detail">Validates input, filters documents by owner & status='ready', gets/creates session</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-label">generate_answer()</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">Main RAG orchestrator</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-label">retrieve_relevant_chunks()</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">Routes to search method (default: hybrid), filters by document_ids</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-content">
+        <div class="step-label">Search Methods</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">
+          <strong>simple</strong>: Keyword matching<br>
+          <strong>bm25</strong>: BM25Okapi scoring<br>
+          <strong>vector</strong>: FAISS + OpenAI embeddings<br>
+          <strong>hybrid</strong>: BM25 + Vector merged (default)
+        </div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">6</div>
+      <div class="step-content">
+        <div class="step-label">rerank_chunks()</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">Post-retrieval reranking: exact match + word overlap + position bonus</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">7</div>
+      <div class="step-content">
+        <div class="step-label">build prompt + llm.invoke()</div>
+        <div class="step-file">documents/services.py</div>
+        <div class="step-detail">Context + sources + question sent to OpenRouter LLM</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">8</div>
+      <div class="step-content">
+        <div class="step-label">QuestionHistory.objects.create()</div>
+        <div class="step-file">documents/views.py</div>
+        <div class="step-detail">Stores question, answer, context, source_chunks in session</div>
+      </div>
+    </div>
+    <div class="arrow">&#8595;</div>
+    <div class="step">
+      <div class="step-num">9</div>
+      <div class="step-content">
+        <div class="step-label">Response</div>
+        <div class="step-file">documents/views.py</div>
+        <div class="step-detail">Returns {answer, sources, search_method, history_id, session_id}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SEARCH METHODS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> SEARCH METHODS</div>
+  <div class="grid-3">
+    <div class="box">
+      <div class="box-title">Simple Search</div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Keyword matching</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Score = word overlap count</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Fast, no dependencies</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Best for exact matches</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">BM25 Search</div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">TF-IDF based scoring</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">rank-bm25 library</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Better relevance ranking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Good for semantic similarity</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Vector Search</div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">OpenAI embeddings</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">FAISS index (L2 distance)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Semantic understanding</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Finds conceptually similar chunks</span></div>
+    </div>
+    <div class="box" style="border-color:#2a4a2a;">
+      <div class="box-title">Hybrid Search <span class="tag tag-new">DEFAULT</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">BM25 + Vector merged</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Deduplication by chunk ID</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Best of both worlds</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">+ Post-retrieval reranking</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Reranking <span class="tag tag-new">NEW</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Exact match bonus (+10)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Word overlap score</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Position bonus (early match)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Applied after retrieval</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- DATA MODELS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> DATA MODELS</div>
+  <div class="grid-3">
+    <div class="box">
+      <div class="box-title">Document</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">title</span> <span class="item-type">CharField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">file</span> <span class="item-type">FileField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">full_text</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">status</span> <span class="item-type">CharField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">error_message</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">processed_at</span> <span class="item-type">DateTimeField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">owner</span> <span class="item-type">FK &rarr; User</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">chunks</span> <span class="item-type">Reverse FK</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">DocumentChunk</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">document</span> <span class="item-type">FK &rarr; Document</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">content</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">chunk_index</span> <span class="item-type">IntegerField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">page_number</span> <span class="item-type">IntegerField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">embedding</span> <span class="item-type">BinaryField</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">ChatSession</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">title</span> <span class="item-type">CharField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">owner</span> <span class="item-type">FK &rarr; User</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">messages</span> <span class="item-type">Reverse FK</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">created_at</span> <span class="item-type">DateTimeField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">updated_at</span> <span class="item-type">DateTimeField</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">QuestionHistory</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">session</span> <span class="item-type">FK &rarr; ChatSession</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">question</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">answer</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">retrieved_context</span> <span class="item-type">TextField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">source_chunks</span> <span class="item-type">JSONField</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">owner</span> <span class="item-type">FK &rarr; User</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">created_at</span> <span class="item-type">DateTimeField</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- DOCUMENT STATUS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> DOCUMENT STATUS LIFECYCLE</div>
+  <div class="arch-diagram">
+    <div class="arch-box"><span class="status-badge status-uploaded">UPLOADED</span></div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box"><span class="status-badge status-processing">PROCESSING</span></div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box"><span class="status-badge status-ready">READY</span></div>
+    <br><br>
+    <div class="arch-box"><span class="status-badge status-uploaded">UPLOADED</span></div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box"><span class="status-badge status-processing">PROCESSING</span></div>
+    <span class="arch-arrow">&#8594;</span>
+    <div class="arch-box"><span class="status-badge status-failed">FAILED</span></div>
+    <div style="margin-top:16px;color:#666;font-size:10px;">
+      Only documents with status='ready' are searchable
+    </div>
+  </div>
+</div>
+
+<!-- SOURCE CHUNKS FORMAT -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> SOURCE CHUNKS FORMAT</div>
+  <div class="code">
+{
+  <span class="str">"index"</span>: <span class="num">1</span>,
+  <span class="str">"document"</span>: <span class="str">"resume.pdf"</span>,
+  <span class="str">"chunk_index"</span>: <span class="num">5</span>,
+  <span class="str">"page"</span>: <span class="num">2</span>,
+  <span class="str">"score"</span>: <span class="num">0.82</span>,
+  <span class="str">"preview"</span>: <span class="str">"Mahyar Rezaeepoor is a Computer Engineering student..."</span>
+}
+  </div>
+</div>
+
+<!-- EVALUATION -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> EVALUATION FRAMEWORK</div>
+  <div class="columns">
+    <div class="box">
+      <div class="box-title">Endpoints</div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/evaluate/?method=hybrid</span>
+      </div>
+      <div class="endpoint">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/compare/</span>
+      </div>
+    </div>
+    <div class="box">
+      <div class="box-title">Metrics</div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Keyword recall per question</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Average keyword recall</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Success rate (has relevant)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Method comparison (simple/BM25/hybrid)</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- FILE STRUCTURE -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> FILE STRUCTURE</div>
+  <div class="code">
+<span class="cm">llm_document_qa/</span>
+├── <span class="kw">config/</span>
+│   ├── settings.py
+│   ├── urls.py
+│   ├── wsgi.py
+│   └── asgi.py
+│
+├── <span class="kw">documents/</span>
+│   ├── models.py            <span class="cm"># Document, DocumentChunk, ChatSession, QuestionHistory</span>
+│   ├── views.py             <span class="cm"># API views (upload, list, delete, ask, history, sessions, eval)</span>
+│   ├── serializers.py       <span class="cm"># DRF serializers with validation</span>
+│   ├── services.py          <span class="cm"># RAG: retrieval + reranking + LLM + FAISS index mgmt</span>
+│   ├── processing.py        <span class="cm"># Document processing: extract, chunk, validate, async</span>
+│   ├── evaluation.py        <span class="cm"># Retrieval evaluation framework</span>
+│   ├── urls.py              <span class="cm"># App URL routing</span>
+│   ├── admin.py             <span class="cm"># Django admin with reprocess action</span>
+│   └── migrations/
+│
+├── <span class="kw">templates/</span>
+│   └── index.html           <span class="cm"># Frontend (RAG-OS terminal UI)</span>
+│
+├── <span class="kw">vector_indexes/</span>           <span class="cm"># FAISS index storage</span>
+│
+├── manage.py
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── .env                     <span class="cm"># OPENROUTER_API_KEY, OPENROUTER_MODEL</span>
+├── call-graph.html          <span class="cm"># This file</span>
+└── db.sqlite3               <span class="cm"># SQLite (switch to PostgreSQL for production)</span>
+  </div>
+</div>
+
+<!-- ENHANCEMENTS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> ENHANCEMENTS IMPLEMENTED</div>
+  <div class="grid-3">
+    <div class="box">
+      <div class="box-title">Architecture <span class="tag tag-improved">IMPROVED</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Async background processing (threading)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Document status lifecycle</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">File validation (size, type, name)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Error handling with status tracking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Page-aware chunking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Chat sessions grouping</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Retrieval <span class="tag tag-new">NEW</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Vector search with FAISS</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Hybrid retrieval (BM25 + Vector)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Post-retrieval reranking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Source citations with page numbers</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Document-scoped search</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">FAISS index auto-rebuild</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Quality <span class="tag tag-new">NEW</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Evaluation framework</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Method comparison endpoint</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Keyword recall metrics</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Success rate tracking</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- KNOWN LIMITATIONS -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> KNOWN LIMITATIONS</div>
+  <div class="columns">
+    <div class="box">
+      <div class="box-title">Current Limitations <span class="tag tag-warning">NEEDS WORK</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">SQLite database (not production-ready)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Threading instead of Celery workers</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">No MIME type validation</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">No rate limiting</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">No JWT/API key authentication</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">No cross-encoder reranking</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Future Improvements</div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">PostgreSQL + pgvector</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Celery/RQ background workers</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">JWT authentication</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Heading-aware chunking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Cross-encoder reranking</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-desc">Streaming LLM responses</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- TECH STACK -->
+<div class="section">
+  <div class="section-title"><span class="icon">&#9670;</span> TECH STACK</div>
+  <div class="grid-3">
+    <div class="box">
+      <div class="box-title">Backend</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">Django 5.1</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">DRF 3.17</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">SQLite</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">Threading</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">AI / RAG</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">LangChain</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">OpenRouter</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">rank-bm25</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">FAISS</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">OpenAI Embeddings</span></div>
+    </div>
+    <div class="box">
+      <div class="box-title">Frontend</div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">Vanilla JS</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">Canvas API (CRT)</span></div>
+      <div class="item"><span class="item-dot"></span><span class="item-name">CSS Grid/Flex</span></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div class="footer">
+  LLM Document QA System - Architecture Call Graph v2 - Generated 2026
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,8 @@
+services:
+  web:
+    build: .
+    container_name: llm_document_qa
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
