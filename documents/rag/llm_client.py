@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
 
@@ -16,7 +16,7 @@ FALLBACK_MODELS = [
 ]
 
 
-def _invoke_with_retry(llm, prompt: str, max_retries: int = MAX_RETRIES) -> Optional[str]:
+def _invoke_with_retry(llm, prompt: Any, max_retries: int = MAX_RETRIES) -> Optional[str]:
     last_error = None
     for attempt in range(max_retries):
         try:
@@ -53,7 +53,7 @@ def get_llm(model_override: str = None):
         return None
 
 
-def invoke_llm(prompt: str, model: str = None) -> tuple:
+def invoke_llm(prompt: Any, model: str = None) -> tuple:
     primary_model = model or os.getenv("OPENROUTER_MODEL", "openrouter/free")
     llm = get_llm(primary_model)
     if llm is None:

@@ -86,17 +86,24 @@ class AskQuestionSerializer(serializers.Serializer):
     )
 
     document_ids = serializers.ListField(
-        child=serializers.IntegerField(),
+        child=serializers.IntegerField(min_value=1),
         required=False,
         default=list,
+        max_length=100,
         help_text="List of document IDs to search within (empty = all documents)"
     )
 
     session_id = serializers.IntegerField(
         required=False,
         allow_null=True,
+        min_value=1,
         help_text="Chat session ID (creates new session if not provided)"
     )
+
+    def validate_document_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError('Document IDs must be unique.')
+        return value
 
 
 class QuestionHistorySerializer(serializers.ModelSerializer):

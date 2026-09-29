@@ -1,6 +1,9 @@
 import logging
 import threading
 import time
+import uuid
+import weakref
+from contextlib import contextmanager
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -11,9 +14,24 @@ from django.utils import timezone
 from documents.models import Document
 from .extractors import extract_text
 from .chunkers import create_chunks
-from documents.indexing.index_sync import upsert_document_chunks
+from documents.indexing.index_sync import delete_document_chunks, upsert_document_chunks
 
 logger = logging.getLogger(__name__)
+
+_document_locks = weakref.WeakValueDictionary()
+_document_locks_guard = threading.Lock()
+
+
+@contextmanager
+def document_lock(document_id: int):
+    """Serialize process/reprocess/delete operations for a document in this process."""
+    with _document_locks_guard:
+        lock = _document_locks.get(document_id)
+        if lock is None:
+            lock = threading.RLock()
+            _document_locks[document_id] = lock
+    with lock:
+        yield
 
 
 def _log_with_context(level: str, msg: str, **kwargs):
@@ -58,23 +76,28 @@ class TaskQueue:
         self._queue: list[tuple[str, Callable]] = []
         self._workers: list[threading.Thread] = []
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()
         self._max_workers = max_workers
         self._max_retries = max_retries
         self._running = False
     
     def start(self):
-        self._running = True
-        for i in range(self._max_workers):
-            worker = threading.Thread(target=self._worker_loop, daemon=True)
-            worker.start()
-            self._workers.append(worker)
-        logger.info(f"Task queue started with {self._max_workers} workers")
+        with self._start_lock:
+            if self._running:
+                return
+            self._running = True
+            for i in range(self._max_workers):
+                worker = threading.Thread(target=self._worker_loop, daemon=True)
+                worker.start()
+                self._workers.append(worker)
+            logger.info(f"Task queue started with {self._max_workers} workers")
     
     def stop(self):
         self._running = False
         logger.info("Task queue stopped")
     
     def enqueue(self, task_id: str, func: Callable, *args, **kwargs) -> TaskResult:
+        self.start()
         with self._lock:
             task = TaskResult(
                 task_id=task_id,
@@ -111,6 +134,8 @@ class TaskQueue:
         
         try:
             result = func()
+            if result is False or (isinstance(result, dict) and result.get('success') is False):
+                raise RuntimeError('Task returned an unsuccessful result')
             task.status = TaskStatus.COMPLETED
             task.completed_at = timezone.now()
             task.metadata['result'] = result
@@ -138,50 +163,63 @@ def get_task_queue() -> TaskQueue:
 
 
 def process_document(document_id: int) -> bool:
-    try:
-        doc = Document.objects.get(id=document_id)
-    except Document.DoesNotExist:
-        _log_with_context('error', f"Document {document_id} not found")
-        return False
+    with document_lock(document_id):
+        try:
+            doc = Document.objects.get(id=document_id)
+        except Document.DoesNotExist:
+            _log_with_context('error', f"Document {document_id} not found")
+            return False
 
-    doc.error_message = None
-    doc.transition_to('processing')
+        # A previous worker may have stopped midway through processing. Always
+        # restart from a known state, including when the stored status is stale.
+        doc.status = 'processing'
+        doc.error_message = None
+        doc.processed_at = None
+        doc.save(update_fields=['status', 'error_message', 'processed_at', 'updated_at'])
 
-    try:
-        doc.transition_to('extracting_text')
-        pages = extract_text(doc.file.path, doc.file.name)
+        try:
+            # Once processing starts, the old chunks must not remain searchable.
+            if not delete_document_chunks(document_id):
+                raise RuntimeError("Could not clear the previous Chroma index")
 
-        if not pages:
-            raise ValueError("No text could be extracted from the document")
+            doc.transition_to('extracting_text')
+            pages = extract_text(doc.file.path, doc.file.name)
+            if not pages:
+                raise ValueError("No text could be extracted from the document")
 
-        full_text = '\n\n'.join(p['text'] for p in pages)
-        doc.full_text = full_text
-        doc.save(update_fields=['full_text'])
+            full_text = '\n\n'.join(p['text'] for p in pages)
+            doc.full_text = full_text
+            doc.save(update_fields=['full_text'])
 
-        doc.transition_to('chunking')
-        chunk_count = create_chunks(pages, doc)
+            doc.transition_to('chunking')
+            chunk_count = create_chunks(pages, doc)
+            if not chunk_count:
+                raise ValueError("No searchable chunks could be created from the document")
 
-        doc.transition_to('indexing')
-        if not upsert_document_chunks(doc.id):
-            raise RuntimeError("Chroma indexing failed; the document was not marked ready")
+            doc.transition_to('indexing')
+            if not upsert_document_chunks(doc.id):
+                raise RuntimeError("Chroma indexing failed; the document was not marked ready")
 
-        doc.transition_to('ready')
-        doc.processed_at = timezone.now()
-        doc.save(update_fields=['processed_at'])
+            doc.status = 'ready'
+            doc.processed_at = timezone.now()
+            doc.save(update_fields=['status', 'processed_at', 'updated_at'])
 
-        _log_with_context('info', f"Document {document_id} processed: {chunk_count} chunks created")
-        return True
+            _log_with_context('info', f"Document {document_id} processed: {chunk_count} chunks created")
+            return True
 
-    except Exception as e:
-        error_msg = str(e)
-        _log_with_context('error', f"Document {document_id} processing failed: {error_msg}")
-        doc.error_message = error_msg
-        doc.transition_to('failed')
-        return False
+        except Exception as e:
+            error_msg = str(e)
+            _log_with_context('error', f"Document {document_id} processing failed: {error_msg}")
+            if not delete_document_chunks(document_id):
+                error_msg += '; Chroma cleanup failed, rebuild the index before retrying'
+            doc.status = 'failed'
+            doc.error_message = error_msg
+            doc.save(update_fields=['status', 'error_message', 'updated_at'])
+            return False
 
 
 def process_document_async(document_id: int) -> str:
-    task_id = f"doc_process_{document_id}_{int(time.time())}"
+    task_id = f"doc_process_{document_id}_{uuid.uuid4().hex}"
     queue = get_task_queue()
     queue.enqueue(task_id, process_document, document_id=document_id)
     return task_id

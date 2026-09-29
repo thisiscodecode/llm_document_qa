@@ -5,6 +5,11 @@ Chroma stores a derived, rebuildable search index keyed by stable chunk IDs.
 """
 
 import logging
+import hashlib
+import json
+import math
+import os
+import tempfile
 import threading
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -49,15 +54,50 @@ def _get_client():
     )
 
 
-@lru_cache(maxsize=1)
-def _get_collection():
-    return _get_client().get_or_create_collection(
-        name=settings.CHROMA_COLLECTION,
+def embedding_identity() -> str:
+    """Stable identifier for the embedding model and its provider endpoint."""
+    model = os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+    endpoint = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+    return hashlib.sha256(f"{endpoint}|{model}".encode("utf-8")).hexdigest()[:12]
+
+
+def _collection_name() -> str:
+    return f"{settings.CHROMA_COLLECTION}-{embedding_identity()}"
+
+
+@lru_cache(maxsize=8)
+def _get_collection_for_identity(name: str, identity: str, model: str):
+    collection = _get_client().get_or_create_collection(
+        name=name,
         metadata={
             "hnsw:space": "cosine",
             "description": "Document chunks for grounded RAG",
+            "embedding_model": model,
+            "embedding_identity": identity,
         },
         embedding_function=None,
+    )
+    if (collection.metadata or {}).get("embedding_identity") != identity:
+        if collection.count() == 0:
+            collection.modify(metadata={
+                "hnsw:space": "cosine",
+                "description": "Document chunks for grounded RAG",
+                "embedding_model": model,
+                "embedding_identity": identity,
+            })
+        else:
+            raise RuntimeError(
+                f"Chroma collection {name} has a different embedding identity; "
+                "use a new collection name and rebuild the index"
+            )
+    return collection
+
+
+def _get_collection():
+    return _get_collection_for_identity(
+        _collection_name(),
+        embedding_identity(),
+        os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
     )
 
 
@@ -84,57 +124,92 @@ def _batch_size() -> int:
     configured = max(1, int(getattr(settings, "CHROMA_BATCH_SIZE", 128)))
     try:
         maximum = int(_get_client().get_max_batch_size())
-        return min(configured, maximum)
+        return min(configured, max(1, maximum))
     except (AttributeError, TypeError, ValueError):
         return configured
+
+
+def _stage_embeddings(chunks: list, destination) -> None:
+    """Validate all embeddings before changing Chroma, spilling large sets to disk."""
+    from .embedding_client import embed_documents
+
+    batch_size = min(_batch_size(), max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))))
+    dimension = None
+    for batch in _batches(chunks, batch_size):
+        embedded = embed_documents([chunk.content for chunk in batch])
+        if embedded is None or len(embedded) != len(batch):
+            raise ValueError("Embedding service returned an incomplete batch")
+        for vector in embedded:
+            if not vector or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in vector
+            ):
+                raise ValueError("Embedding service returned an invalid vector")
+            if dimension is None:
+                dimension = len(vector)
+            elif len(vector) != dimension:
+                raise ValueError("Embedding dimensions changed within the document")
+            destination.write(json.dumps([float(value) for value in vector]))
+            destination.write("\n")
+    destination.seek(0)
 
 
 def upsert_vectors(chunks, document_id: Optional[int] = None) -> bool:
     """Embed and upsert chunks, replacing stale records for one document."""
     chunks = list(chunks)
-    if not chunks:
-        logger.info("No chunks supplied for vector indexing")
-        return False
-
     if document_id is not None and any(c.document_id != document_id for c in chunks):
         raise ValueError("All chunks must belong to the requested document")
 
-    from .embedding_client import embed_documents
-
-    embeddings = embed_documents([chunk.content for chunk in chunks])
-    if not embeddings or len(embeddings) != len(chunks):
-        logger.error("Embedding service returned an incomplete result")
-        return False
-
-    records = list(zip(chunks, embeddings))
-    collection = _get_collection()
+    collection = None
+    write_started = False
 
     try:
-        with _write_lock:
-            if document_id is not None:
-                collection.delete(where={"document_id": int(document_id)})
+        # Embedding failures must never erase a document's previous vectors.
+        with tempfile.SpooledTemporaryFile(
+            max_size=8 * 1024 * 1024, mode="w+t", encoding="utf-8"
+        ) as staged:
+            if chunks:
+                _stage_embeddings(chunks, staged)
+            collection = _get_collection()
+            with _write_lock:
+                if document_id is not None:
+                    write_started = True
+                    collection.delete(where={"document_id": int(document_id)})
 
-            for batch in _batches(records, _batch_size()):
-                batch_chunks = [item[0] for item in batch]
-                collection.upsert(
-                    ids=[_chunk_id(chunk) for chunk in batch_chunks],
-                    embeddings=[item[1] for item in batch],
-                    documents=[chunk.content for chunk in batch_chunks],
-                    metadatas=[_chunk_metadata(chunk) for chunk in batch_chunks],
-                )
+                for batch in _batches(chunks, _batch_size()):
+                    embeddings = [json.loads(staged.readline()) for _ in batch]
+                    write_started = True
+                    collection.upsert(
+                        ids=[_chunk_id(chunk) for chunk in batch],
+                        embeddings=embeddings,
+                        documents=[chunk.content for chunk in batch],
+                        metadatas=[_chunk_metadata(chunk) for chunk in batch],
+                    )
 
-            # A global rebuild must also remove records whose source chunks vanished.
-            if document_id is None:
-                current_ids = {_chunk_id(chunk) for chunk in chunks}
-                indexed = collection.get(include=[])
-                stale_ids = [item for item in indexed.get("ids", []) if item not in current_ids]
-                for batch in _batches(stale_ids, _batch_size()):
-                    collection.delete(ids=batch)
+                # A global rebuild also removes records whose source chunks vanished.
+                if document_id is None:
+                    current_ids = {_chunk_id(chunk) for chunk in chunks}
+                    indexed = collection.get(include=[])
+                    stale_ids = [item for item in indexed.get("ids", []) if item not in current_ids]
+                    for batch in _batches(stale_ids, _batch_size()):
+                        write_started = True
+                        collection.delete(ids=batch)
 
         logger.info("Indexed %s chunks in Chroma", len(chunks))
         return True
     except Exception:
         logger.exception("Chroma vector upsert failed")
+        # A failed document write may have left some new batches in Chroma.
+        # Failed documents are not queryable, and removing the partial index
+        # keeps subsequent reprocessing from inheriting those records.
+        if document_id is not None and write_started and collection is not None:
+            try:
+                with _write_lock:
+                    collection.delete(where={"document_id": int(document_id)})
+            except Exception:
+                logger.exception("Failed to clean up partial vectors for document %s", document_id)
         return False
 
 
@@ -150,10 +225,7 @@ def delete_vectors_for_document(document_id: int) -> bool:
 
 
 def rebuild_full_index() -> bool:
-    chunks = list(DocumentChunk.objects.select_related("document").all())
-    if not chunks:
-        logger.info("No chunks to index")
-        return False
+    chunks = list(DocumentChunk.objects.select_related("document").filter(document__status="ready"))
     return upsert_vectors(chunks)
 
 
@@ -181,7 +253,7 @@ def get_mapping_stats() -> dict:
         }
         return {
             "backend": "chroma",
-            "collection": settings.CHROMA_COLLECTION,
+            "collection": _collection_name(),
             "total_vectors": collection.count(),
             "documents_indexed": len(document_ids),
         }
@@ -189,7 +261,7 @@ def get_mapping_stats() -> dict:
         logger.exception("Failed to read Chroma stats")
         return {
             "backend": "chroma",
-            "collection": settings.CHROMA_COLLECTION,
+            "collection": _collection_name(),
             "total_vectors": 0,
             "documents_indexed": 0,
             "error": str(exc),

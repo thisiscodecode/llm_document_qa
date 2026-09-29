@@ -4,6 +4,9 @@ __pycache__/
 db.sqlite3
 .env
 media/
+# The legacy local media root is the repository root. Avoid tracking new uploads.
+/documents/*.pdf
+/documents/*.docx
 chroma_db/
 .DS_Store
 

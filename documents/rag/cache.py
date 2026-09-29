@@ -79,8 +79,7 @@ class TTLCache:
 
 
 def _make_key(*args) -> str:
-    raw = '|'.join(str(a) for a in args)
-    return hashlib.md5(raw.encode()).hexdigest()
+    return hashlib.sha256(repr(args).encode('utf-8')).hexdigest()
 
 
 query_cache = TTLCache(ttl=300, max_entries=500)
@@ -88,23 +87,25 @@ embedding_cache = TTLCache(ttl=600, max_entries=2000)
 metadata_cache = TTLCache(ttl=60, max_entries=500)
 
 
-def get_cached_query(query: str, method: str, doc_ids: tuple) -> Optional[list]:
+def get_cached_query(query: str, method: str, doc_ids: tuple) -> Optional[dict]:
     key = _make_key('query', query, method, doc_ids)
     return query_cache.get(key)
 
 
-def set_cached_query(query: str, method: str, doc_ids: tuple, result: list):
+def set_cached_query(query: str, method: str, doc_ids: tuple, result: dict):
     key = _make_key('query', query, method, doc_ids)
     query_cache.set(key, result)
 
 
 def get_cached_embedding(text: str) -> Optional[list]:
-    key = _make_key('emb', text)
+    from documents.indexing.vector_index import embedding_identity
+    key = _make_key('emb', embedding_identity(), text)
     return embedding_cache.get(key)
 
 
 def set_cached_embedding(text: str, embedding: list):
-    key = _make_key('emb', text)
+    from documents.indexing.vector_index import embedding_identity
+    key = _make_key('emb', embedding_identity(), text)
     embedding_cache.set(key, embedding, ttl=600)
 
 

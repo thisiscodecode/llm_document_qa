@@ -7,17 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 def apply_permission_filter(document_ids: Optional[List[int]], owner=None) -> List[int]:
-    from .cache import get_cached_permissions, set_cached_permissions
-    from .feature_flags import is_enabled
-
-    owner_id = owner.id if owner else None
-    doc_ids_tuple = tuple(document_ids) if document_ids else ()
-
-    if is_enabled('advanced_caching'):
-        cached = get_cached_permissions(owner_id, doc_ids_tuple)
-        if cached is not None:
-            return cached
-
+    # Authorization is checked against the current database state.
     if document_ids is not None:
         if owner:
             permitted = Document.objects.filter(
@@ -43,9 +33,6 @@ def apply_permission_filter(document_ids: Optional[List[int]], owner=None) -> Li
         
         result = list(queryset.values_list('id', flat=True))
         logger.info(f"Permission filter: {len(result)} documents permitted for owner={owner}")
-
-    if is_enabled('advanced_caching'):
-        set_cached_permissions(owner_id, doc_ids_tuple, result)
 
     return result
 

@@ -1,6 +1,7 @@
 import re
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -37,18 +38,31 @@ def compute_lexical_score(query: str, content: str) -> float:
     return exact_match_score + word_overlap_score
 
 
-def compute_cross_encoder_score(query: str, content: str) -> Optional[float]:
+@lru_cache(maxsize=1)
+def _cross_encoder_model():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+
+def _cross_encoder_scores(query: str, chunks: list) -> Optional[list[float]]:
     try:
-        from sentence_transformers import CrossEncoder
-        model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        score = model.predict([(query, content[:512])])
-        return float(score[0]) * 10.0
+        # Reuse the loaded model across requests.
+        scores = _cross_encoder_model().predict(
+            [(query, chunk.content[:512]) for chunk in chunks]
+        )
+        return [float(score) * 10.0 for score in scores]
     except ImportError:
         logger.debug("sentence-transformers not installed, cross-encoder unavailable")
         return None
     except Exception as e:
         logger.warning(f"Cross-encoder scoring failed: {e}")
         return None
+
+
+def compute_cross_encoder_score(query: str, content: str) -> Optional[float]:
+    candidate = type('Candidate', (), {'content': content})()
+    scores = _cross_encoder_scores(query, [candidate])
+    return scores[0] if scores else None
 
 
 def compute_semantic_score(query: str, content: str) -> float:
@@ -132,14 +146,20 @@ def rerank(query: str, chunks: list, limit: int = 3,
         logger.info(f"Capping cross-encoder input from {len(chunks)} to {CROSS_ENCODER_MAX_CHUNKS} chunks")
         input_chunks = chunks[:CROSS_ENCODER_MAX_CHUNKS]
 
+    cross_scores = _cross_encoder_scores(query, input_chunks) if config.use_cross_encoder else None
     scored = []
-    for chunk in input_chunks:
+    for index, chunk in enumerate(input_chunks):
         lexical_score = compute_lexical_score(query, chunk.content)
 
         semantic_score = 0.0
         if config.use_semantic:
             if config.use_cross_encoder:
-                semantic_score = compute_semantic_score(query, chunk.content)
+                # A failed optional model must not trigger one remote
+                # embedding request per candidate chunk.
+                semantic_score = (
+                    cross_scores[index] if cross_scores is not None
+                    else float(getattr(chunk, 'retrieval_score', 0.0)) * 10.0
+                )
             else:
                 # Chroma already calculated semantic similarity during retrieval.
                 # Reusing it avoids one embedding API call per candidate chunk.

@@ -1,11 +1,16 @@
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 from .models import Document, DocumentChunk, QuestionHistory, ChatSession
 
 
 class DocumentChunkInline(admin.TabularInline):
     model = DocumentChunk
     extra = 0
-    readonly_fields = ('content', 'chunk_index')
+    can_delete = False
+    readonly_fields = ('content', 'chunk_index', 'page_number')
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Document)
@@ -17,6 +22,11 @@ class DocumentAdmin(admin.ModelAdmin):
     inlines = [DocumentChunkInline]
     actions = ['reprocess_documents']
 
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop('delete_selected', None)
+        return actions
+
     def reprocess_documents(self, request, queryset):
         from .ingestion.document_processor import process_document
         for doc in queryset:
@@ -26,14 +36,25 @@ class DocumentAdmin(admin.ModelAdmin):
 
     def delete_model(self, request, obj):
         from .indexing.vector_index import delete_vectors_for_document
-        delete_vectors_for_document(obj.id)
-        super().delete_model(request, obj)
+        from .ingestion.document_processor import document_lock
+
+        with document_lock(obj.id):
+            if not delete_vectors_for_document(obj.id):
+                raise ValidationError('Chroma cleanup failed; the document was not deleted')
+            super().delete_model(request, obj)
 
     def delete_queryset(self, request, queryset):
         from .indexing.vector_index import delete_vectors_for_document
-        for document_id in queryset.values_list('id', flat=True):
-            delete_vectors_for_document(document_id)
-        super().delete_queryset(request, queryset)
+        from .ingestion.document_processor import document_lock
+
+        # Delete one complete Chroma/SQL pair at a time. If a later cleanup
+        # fails, earlier documents are already gone and the remaining ones
+        # still have their vectors.
+        for obj in list(queryset):
+            with document_lock(obj.id):
+                if not delete_vectors_for_document(obj.id):
+                    raise ValidationError('Chroma cleanup failed; remaining documents were not deleted')
+                obj.delete()
 
 
 @admin.register(DocumentChunk)
@@ -41,6 +62,16 @@ class DocumentChunkAdmin(admin.ModelAdmin):
     list_display = ('document', 'chunk_index')
     search_fields = ('content',)
     list_filter = ('document',)
+    readonly_fields = ('document', 'content', 'chunk_index', 'page_number')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class QuestionHistoryInline(admin.TabularInline):

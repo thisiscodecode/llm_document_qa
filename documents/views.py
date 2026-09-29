@@ -1,23 +1,23 @@
 import uuid
 import logging
+from functools import wraps
 
 from django.shortcuts import render
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from django.db import connections
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.renderers import JSONRenderer, BrowsableAPIRenderer
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 
-from .models import Document, DocumentChunk, QuestionHistory, ChatSession
+from .models import Document, QuestionHistory, ChatSession
 from .serializers import (
-    DocumentSerializer,
     AskQuestionSerializer,
     QuestionHistorySerializer,
-    DocumentChunkSerializer,
-    ChatSessionSerializer,
 )
 from .rag.answer_service import generate_answer
 from .ingestion.document_processor import process_document_async, get_task_queue
@@ -28,12 +28,52 @@ from .evaluation import evaluate_retrieval, compare_search_methods
 logger = logging.getLogger(__name__)
 
 
+def health_live(request):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
+    return JsonResponse({'status': 'ok'})
+
+
+def health_ready(request):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
+    try:
+        with connections['default'].cursor() as cursor:
+            cursor.execute('SELECT 1')
+        from .indexing.vector_index import _get_client
+        _get_client().heartbeat()
+    except Exception:
+        logger.warning('Readiness check failed', exc_info=True)
+        return JsonResponse({'status': 'unavailable'}, status=503)
+    return JsonResponse({'status': 'ok'})
+
+
+def api_login_required(view):
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required.'}, status=401)
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+def api_staff_required(view):
+    @wraps(view)
+    @api_login_required
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_staff:
+            return JsonResponse({'error': 'Staff access required.'}, status=403)
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+@login_required
 @ensure_csrf_cookie
 def index(request):
     return render(request, 'index.html')
 
 
-@csrf_exempt
+@api_login_required
 def upload_document(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
@@ -46,22 +86,30 @@ def upload_document(request):
     if errors:
         return JsonResponse({'error': ' '.join(errors)}, status=400)
 
+    document_type = request.POST.get('document_type', 'default')
+    if document_type not in DOCUMENT_TYPE_CONFIGS:
+        return JsonResponse({'error': 'Invalid document_type.'}, status=400)
+    config = DOCUMENT_TYPE_CONFIGS[document_type]
     try:
-        owner = request.user if request.user.is_authenticated else None
-        document_type = request.POST.get('document_type', 'default')
-        chunk_size = request.POST.get('chunk_size')
-        chunk_overlap = request.POST.get('chunk_overlap')
+        chunk_size = int(request.POST.get('chunk_size') or config['chunk_size'])
+        chunk_overlap = int(request.POST.get('chunk_overlap') or config['overlap'])
+    except (TypeError, ValueError):
+        return JsonResponse({'error': 'chunk_size and chunk_overlap must be integers.'}, status=400)
+    if not 50 <= chunk_size <= 4000:
+        return JsonResponse({'error': 'chunk_size must be between 50 and 4000.'}, status=400)
+    if not 0 <= chunk_overlap < chunk_size:
+        return JsonResponse({'error': 'chunk_overlap must be non-negative and smaller than chunk_size.'}, status=400)
 
-        config = DOCUMENT_TYPE_CONFIGS.get(document_type, DOCUMENT_TYPE_CONFIGS['default'])
-
+    doc = None
+    try:
         doc = Document.objects.create(
             title=file.name,
             file=file,
-            owner=owner,
+            owner=request.user,
             status='uploaded',
             document_type=document_type,
-            chunk_size=int(chunk_size) if chunk_size else config['chunk_size'],
-            chunk_overlap=int(chunk_overlap) if chunk_overlap else config['overlap'],
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
         task_id = process_document_async(doc.id)
@@ -74,23 +122,24 @@ def upload_document(request):
             'document_type': document_type,
             'chunk_size': doc.chunk_size,
             'chunk_overlap': doc.chunk_overlap,
-        })
+        }, status=202)
 
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        return JsonResponse({'error': f'Upload failed: {str(e)}'}, status=500)
+    except Exception:
+        logger.exception('Upload failed')
+        if doc is not None:
+            doc.status = 'failed'
+            doc.error_message = 'Could not schedule document processing.'
+            doc.save(update_fields=['status', 'error_message'])
+        return JsonResponse({'error': 'Upload failed. Please try again.'}, status=500)
 
 
-@csrf_exempt
+@api_login_required
 def document_status(request, doc_id):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
     try:
-        if request.user.is_authenticated:
-            doc = Document.objects.get(id=doc_id, owner=request.user)
-        else:
-            doc = Document.objects.get(id=doc_id, owner__isnull=True)
+        doc = Document.objects.get(id=doc_id, owner=request.user)
     except Document.DoesNotExist:
         return JsonResponse({'error': 'Document not found.'}, status=404)
 
@@ -125,15 +174,12 @@ def document_status(request, doc_id):
     })
 
 
-@csrf_exempt
+@api_login_required
 def list_documents(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
-    if request.user.is_authenticated:
-        docs = Document.objects.filter(owner=request.user).order_by('-created_at')
-    else:
-        docs = Document.objects.filter(owner__isnull=True).order_by('-created_at')
+    docs = Document.objects.filter(owner=request.user).order_by('-created_at')
 
     data = []
     for doc in docs:
@@ -150,17 +196,19 @@ def list_documents(request):
     return JsonResponse(data, safe=False)
 
 
-@csrf_exempt
+@api_login_required
 def delete_document(request, doc_id):
     if request.method != 'DELETE':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
     from .ingestion.document_lifecycle import delete_document as delete_document_with_index
 
-    owner = request.user if request.user.is_authenticated else None
-    result = delete_document_with_index(doc_id, owner=owner)
+    result = delete_document_with_index(doc_id, owner=request.user)
     if not result['success']:
-        return JsonResponse({'error': 'Document not found.'}, status=404)
+        if result.get('error') == 'Document not found':
+            return JsonResponse({'error': 'Document not found.'}, status=404)
+        logger.error('Could not remove document %s from the vector index', doc_id)
+        return JsonResponse({'error': 'Document deletion failed. Please retry.'}, status=503)
     return JsonResponse({'message': f'Deleted "{result["title"]}".'})
 
 
@@ -168,7 +216,9 @@ class AskQuestionAPIView(generics.GenericAPIView):
     serializer_class = AskQuestionSerializer
     renderer_classes = [JSONRenderer, BrowsableAPIRenderer]
     parser_classes = [JSONParser, FormParser, MultiPartParser]
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'ask'
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -180,54 +230,28 @@ class AskQuestionAPIView(generics.GenericAPIView):
         session_id = serializer.validated_data.get("session_id")
         request_id = str(uuid.uuid4())[:8]
 
-        owner = request.user if request.user.is_authenticated else None
+        owner = request.user
 
         if session_id:
             try:
-                if owner:
-                    session = ChatSession.objects.get(id=session_id, owner=owner)
-                else:
-                    session = ChatSession.objects.get(id=session_id, owner__isnull=True)
+                session = ChatSession.objects.get(id=session_id, owner=owner)
             except ChatSession.DoesNotExist:
                 return Response({
                     "error": "Session not found."
                 }, status=status.HTTP_404_NOT_FOUND)
         else:
-            session = ChatSession.objects.create(
-                title=question[:50],
-                owner=owner,
-            )
+            session = None
 
-        if request.user.is_authenticated:
-            if document_ids:
-                valid_ids = Document.objects.filter(
-                    id__in=document_ids,
-                    owner=request.user,
-                    status='ready'
-                ).values_list('id', flat=True)
-                document_ids = list(valid_ids)
-            else:
-                document_ids = list(
-                    Document.objects.filter(
-                        owner=request.user,
-                        status='ready'
-                    ).values_list('id', flat=True)
-                )
+        ready_documents = Document.objects.filter(owner=owner, status='ready')
+        if document_ids:
+            valid_ids = set(ready_documents.filter(id__in=document_ids).values_list('id', flat=True))
+            if valid_ids != set(document_ids):
+                return Response({
+                    "error": "One or more documents are unavailable or not ready."
+                }, status=status.HTTP_400_BAD_REQUEST)
+            document_ids = sorted(valid_ids)
         else:
-            if document_ids:
-                valid_ids = Document.objects.filter(
-                    id__in=document_ids,
-                    owner__isnull=True,
-                    status='ready'
-                ).values_list('id', flat=True)
-                document_ids = list(valid_ids)
-            else:
-                document_ids = list(
-                    Document.objects.filter(
-                        owner__isnull=True,
-                        status='ready'
-                    ).values_list('id', flat=True)
-                )
+            document_ids = list(ready_documents.values_list('id', flat=True))
 
         if not document_ids:
             return Response({
@@ -236,31 +260,52 @@ class AskQuestionAPIView(generics.GenericAPIView):
                 "search_method": search_method,
                 "sources": [],
                 "history_id": None,
-                "session_id": session.id,
+                "session_id": session.id if session else None,
                 "request_id": request_id,
             })
 
-        result = generate_answer(
-            question=question,
-            search_method=search_method,
-            document_ids=document_ids if document_ids else None,
-            owner=owner,
-            request_id=request_id,
-        )
+        try:
+            result = generate_answer(
+                question=question,
+                search_method=search_method,
+                document_ids=document_ids,
+                owner=owner,
+                request_id=request_id,
+            )
+        except Exception:
+            logger.exception('Answer generation failed for request %s', request_id)
+            return Response({
+                "error": "Question answering is temporarily unavailable.",
+                "request_id": request_id,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        if not isinstance(result, dict):
-            result = {
-                "answer": "LLM service error: Invalid response from generate_answer().",
-                "context": "",
-                "search_method": search_method,
-                "sources": [],
-            }
+        if not isinstance(result, dict) or not isinstance(result.get('answer'), str):
+            logger.error('Invalid answer result for request %s', request_id)
+            return Response({
+                "error": "Question answering is temporarily unavailable.",
+                "request_id": request_id,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if result.get('error') or result.get('failure_mode'):
+            failure_mode = result.get('failure_mode')
+            unsupported = failure_mode in (
+                'no_chunks_retrieved', 'no_context', 'verification_failed',
+                'verification_low_support', 'verification_no_context',
+            )
+            message = result['answer'] if unsupported else 'Question answering is temporarily unavailable.'
+            return Response({
+                'error': message,
+                'request_id': result.get('request_id', request_id),
+            }, status=422 if unsupported else status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if session is None:
+            session = ChatSession.objects.create(title=question[:50], owner=owner)
 
         history = QuestionHistory.objects.create(
             session=session,
             question=question,
             answer=result["answer"],
-            retrieved_context=result["context"],
+            retrieved_context=result.get("context", ""),
             source_chunks=result.get("sources", []),
             owner=owner,
         )
@@ -269,9 +314,9 @@ class AskQuestionAPIView(generics.GenericAPIView):
 
         return Response({
             "question": question,
-            "search_method": result["search_method"],
+            "search_method": result.get("search_method", search_method),
             "answer": result["answer"],
-            "context": result["context"],
+            "context": result.get("context", ""),
             "sources": result.get("sources", []),
             "history_id": history.id,
             "session_id": session.id,
@@ -284,24 +329,19 @@ class AskQuestionAPIView(generics.GenericAPIView):
 class QuestionHistoryListAPIView(generics.ListAPIView):
     serializer_class = QuestionHistorySerializer
     renderer_classes = [JSONRenderer, BrowsableAPIRenderer]
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        if self.request.user.is_authenticated:
-            return QuestionHistory.objects.filter(owner=self.request.user).order_by("-created_at")
-        return QuestionHistory.objects.filter(owner__isnull=True).order_by("-created_at")
+        return QuestionHistory.objects.filter(owner=self.request.user).order_by("-created_at")
 
 
-@csrf_exempt
+@api_login_required
 def delete_history(request, history_id):
     if request.method != 'DELETE':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
     try:
-        if request.user.is_authenticated:
-            h = QuestionHistory.objects.get(id=history_id, owner=request.user)
-        else:
-            h = QuestionHistory.objects.get(id=history_id, owner__isnull=True)
+        h = QuestionHistory.objects.get(id=history_id, owner=request.user)
 
         h.delete()
         return JsonResponse({'message': 'Deleted.'})
@@ -309,25 +349,23 @@ def delete_history(request, history_id):
         return JsonResponse({'error': 'Not found.'}, status=404)
 
 
-@csrf_exempt
+@api_login_required
 def list_sessions(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
-    if request.user.is_authenticated:
-        sessions = ChatSession.objects.filter(owner=request.user)
-    else:
-        sessions = ChatSession.objects.filter(owner__isnull=True)
+    sessions = ChatSession.objects.filter(owner=request.user).prefetch_related('messages')
 
     data = []
     for session in sessions:
-        messages = session.messages.all().order_by('created_at')
+        messages = session.messages.all()
         msg_data = []
         for msg in messages:
             msg_data.append({
                 'id': msg.id,
                 'question': msg.question,
                 'answer': msg.answer,
+                'sources': msg.source_chunks,
                 'created_at': msg.created_at.isoformat() if msg.created_at else None,
             })
 
@@ -343,16 +381,13 @@ def list_sessions(request):
     return JsonResponse(data, safe=False)
 
 
-@csrf_exempt
+@api_login_required
 def delete_session(request, session_id):
     if request.method != 'DELETE':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
     try:
-        if request.user.is_authenticated:
-            session = ChatSession.objects.get(id=session_id, owner=request.user)
-        else:
-            session = ChatSession.objects.get(id=session_id, owner__isnull=True)
+        session = ChatSession.objects.get(id=session_id, owner=request.user)
 
         session.delete()
         return JsonResponse({'message': 'Deleted.'})
@@ -360,7 +395,7 @@ def delete_session(request, session_id):
         return JsonResponse({'error': 'Not found.'}, status=404)
 
 
-@csrf_exempt
+@api_staff_required
 def system_stats(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
@@ -394,51 +429,57 @@ def system_stats(request):
     })
 
 
-@csrf_exempt
+@api_staff_required
 def evaluate(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
     search_method = request.GET.get('method', 'hybrid')
+    if search_method not in ('simple', 'bm25', 'vector', 'hybrid'):
+        return JsonResponse({'error': 'Invalid search method.'}, status=400)
 
-    if request.user.is_authenticated:
-        document_ids = list(
-            Document.objects.filter(owner=request.user, status='ready').values_list('id', flat=True)
-        )
-    else:
-        document_ids = list(
-            Document.objects.filter(owner__isnull=True, status='ready').values_list('id', flat=True)
-        )
+    document_ids = list(
+        Document.objects.filter(owner=request.user, status='ready').values_list('id', flat=True)
+    )
 
     if not document_ids:
         return JsonResponse({'error': 'No ready documents found.'}, status=400)
 
-    result = evaluate_retrieval(search_method=search_method, document_ids=document_ids)
+    try:
+        result = evaluate_retrieval(
+            search_method=search_method, document_ids=document_ids, owner=request.user
+        )
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except OSError:
+        logger.exception('Evaluation dataset is unavailable')
+        return JsonResponse({'error': 'Evaluation dataset is unavailable.'}, status=503)
     return JsonResponse(result)
 
 
-@csrf_exempt
+@api_staff_required
 def compare_methods(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
-    if request.user.is_authenticated:
-        document_ids = list(
-            Document.objects.filter(owner=request.user, status='ready').values_list('id', flat=True)
-        )
-    else:
-        document_ids = list(
-            Document.objects.filter(owner__isnull=True, status='ready').values_list('id', flat=True)
-        )
+    document_ids = list(
+        Document.objects.filter(owner=request.user, status='ready').values_list('id', flat=True)
+    )
 
     if not document_ids:
         return JsonResponse({'error': 'No ready documents found.'}, status=400)
 
-    result = compare_search_methods(document_ids=document_ids)
+    try:
+        result = compare_search_methods(document_ids=document_ids, owner=request.user)
+    except ValueError as exc:
+        return JsonResponse({'error': str(exc)}, status=400)
+    except OSError:
+        logger.exception('Evaluation dataset is unavailable')
+        return JsonResponse({'error': 'Evaluation dataset is unavailable.'}, status=503)
     return JsonResponse(result)
 
 
-@csrf_exempt
+@api_staff_required
 def feature_flags_admin(request):
     from .rag.feature_flags import list_flags, get_flag, update_flag
 
@@ -449,15 +490,28 @@ def feature_flags_admin(request):
         import json
         try:
             data = json.loads(request.body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
+        if not isinstance(data, dict):
+            return JsonResponse({'error': 'Expected a JSON object.'}, status=400)
+
         name = data.get('name')
-        if not name:
+        if not isinstance(name, str) or not name:
             return JsonResponse({'error': 'Missing flag name'}, status=400)
 
         rollout_pct = data.get('rollout_pct')
         variants = data.get('variants')
+        if rollout_pct is not None and (
+            isinstance(rollout_pct, bool) or not isinstance(rollout_pct, (int, float))
+            or not 0 <= rollout_pct <= 100
+        ):
+            return JsonResponse({'error': 'rollout_pct must be between 0 and 100.'}, status=400)
+        if variants is not None and (
+            not isinstance(variants, list) or not 1 <= len(variants) <= 10
+            or any(not isinstance(v, str) or not v or len(v) > 64 for v in variants)
+        ):
+            return JsonResponse({'error': 'variants must be a nonempty list of names.'}, status=400)
 
         if not update_flag(name, rollout_pct=rollout_pct, variants=variants):
             return JsonResponse({'error': f'Flag {name} not found'}, status=404)
