@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG-OS</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+:root{
+  --bg:#0a0d0a;
+  --bg-screen:#0c100c;
+  --amber:#ffb000;
+  --amber-bright:#ffd166;
+  --amber-dim:#8a6326;
+  --amber-faint:#3a2c12;
+  --red:#ff4433;
+  --green-ok:#5ad36b;
+  --card:#15190f;
+  --line:rgba(255,176,0,0.15);
+  --font:'JetBrains Mono',monospace;
+}
+
+*{box-sizing:border-box;margin:0;padding:0;}
+
+html,body{
+  height:100%;
+  background:#000;
+  font-family:var(--font);
+  color:var(--amber);
+  overflow:hidden;
+}
+
+.bezel{
+  position:relative;
+  width:100vw;height:100vh;
+  background:radial-gradient(ellipse at center,#1a1a1a 0%,#050505 100%);
+  display:flex;align-items:flex-start;justify-content:flex-start;
+  padding:10px 5px;
+  gap:30px;
+  overflow:hidden;
+}
+
+.crt-panel{
+  flex-shrink:0;
+  width:200px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:flex-start;
+  padding:0;
+  margin-top:15px;
+  gap:6px;
+}
+.crt-panel canvas{
+  display:block;
+  image-rendering:auto;
+  width:200px;
+  height:138px;
+}
+.crt-label{
+  font-size:8px;
+  letter-spacing:0.15em;
+  color:var(--amber-dim);
+  text-align:center;
+  opacity:0.4;
+}
+
+@media(max-width:900px){
+  .crt-panel{display:none;}
+}
+
+.screen{
+  position:relative;
+  width:100%;
+  height:calc(100vh - 20px);
+  max-width:1200px;
+  background:var(--bg-screen);
+  border-radius:14px;
+  box-shadow:inset 0 0 120px rgba(0,0,0,0.85),inset 0 0 40px rgba(255,176,0,0.05),0 0 60px rgba(0,0,0,0.8);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  animation:flicker 6s infinite;
+}
+
+.screen::before{
+  content:"";
+  position:absolute;inset:0;
+  background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 1px,rgba(0,0,0,0.18) 2px,rgba(0,0,0,0.18) 3px);
+  pointer-events:none;z-index:5;mix-blend-mode:multiply;
+}
+
+.screen::after{
+  content:"";
+  position:absolute;inset:0;
+  background:radial-gradient(ellipse at center,rgba(255,255,255,0.04) 0%,rgba(0,0,0,0.35) 100%);
+  pointer-events:none;z-index:6;
+}
+
+@keyframes flicker{
+  0%,96%,100%{filter:brightness(1);}
+  97%{filter:brightness(1.04);}
+  98%{filter:brightness(0.97);}
+}
+
+.statusbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 18px;
+  border-bottom:1px solid var(--line);
+  font-size:11px;letter-spacing:0.12em;color:var(--amber-dim);
+  flex-shrink:0;z-index:2;
+}
+.statusbar .left{display:flex;align-items:center;gap:10px;}
+.statusbar .dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--red);animation:blink 1.4s steps(2) infinite;
+  box-shadow:0 0 6px var(--red);
+}
+@keyframes blink{50%{opacity:0.15;}}
+.statusbar .title{color:var(--amber);font-weight:700;}
+.statusbar .right{display:flex;align-items:center;gap:18px;}
+.logout-button{background:transparent;color:var(--amber-dim);border:1px solid var(--amber-faint);
+  border-radius:3px;font:inherit;font-size:10px;padding:3px 7px;cursor:pointer;}
+.logout-button:hover{color:var(--amber-bright);border-color:var(--amber-dim);}
+
+.body{
+  flex:1;display:grid;
+  grid-template-columns:1fr 320px;
+  min-height:0;z-index:2;
+}
+
+@media(max-width:760px){
+  .body{grid-template-columns:1fr;}
+  .sidebar{display:none;}
+}
+
+.console{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line);}
+
+.log{
+  flex:1;overflow-y:auto;padding:18px 20px;
+  font-size:13.5px;line-height:1.65;
+}
+.log::-webkit-scrollbar{width:8px;}
+.log::-webkit-scrollbar-thumb{background:var(--amber-faint);border-radius:4px;}
+.log::-webkit-scrollbar-track{background:transparent;}
+
+.entry{margin-bottom:18px;}
+.prompt-line{color:var(--amber-bright);font-weight:700;margin-bottom:4px;}
+.prompt-line .chevron{color:var(--red);margin-right:6px;}
+.user-text{color:var(--amber-bright);}
+
+.sys-line{color:var(--amber-dim);font-size:12px;margin:2px 0;}
+.sys-line .ok{color:var(--green-ok);}
+.sys-line .err{color:var(--red);}
+
+.answer{
+  color:var(--amber);white-space:pre-wrap;
+  border-left:2px solid var(--amber-faint);
+  padding-left:12px;margin-top:8px;
+}
+.answer-sources{margin:7px 0 0 12px;color:var(--amber-dim);font-size:11px;}
+.answer-sources summary{cursor:pointer;}
+.answer-sources .source-item{margin:7px 0;border-left:1px solid var(--amber-faint);padding-left:8px;}
+.answer-sources .source-preview{color:var(--amber-faint);white-space:pre-wrap;}
+.cursor-blink{
+  display:inline-block;width:8px;height:14px;
+  background:var(--amber);margin-left:2px;
+  vertical-align:-2px;animation:cblink 1s steps(2) infinite;
+}
+@keyframes cblink{50%{opacity:0;}}
+
+.inputrow{
+  border-top:1px solid var(--line);
+  padding:12px 20px;
+  display:flex;align-items:center;gap:8px;flex-shrink:0;
+}
+.inputrow .chevron{color:var(--red);font-weight:700;}
+.inputrow input{
+  flex:1;background:transparent;border:none;outline:none;
+  color:var(--amber-bright);font-family:var(--font);
+  font-size:14px;letter-spacing:0.02em;
+}
+.inputrow input::placeholder{color:var(--amber-faint);}
+.inputrow .send{
+  background:transparent;border:1px solid var(--amber-faint);
+  color:var(--amber-dim);font-family:var(--font);
+  font-size:11px;letter-spacing:0.1em;
+  padding:6px 10px;border-radius:3px;cursor:pointer;transition:all .15s;
+}
+.inputrow .send:hover{color:var(--amber-bright);border-color:var(--amber-dim);}
+
+.sidebar{display:flex;flex-direction:column;min-height:0;}
+.sidebar-head{
+  padding:12px 16px;font-size:11px;letter-spacing:0.12em;
+  color:var(--amber-dim);border-bottom:1px solid var(--line);
+  flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
+}
+.sidebar-head .method-toggle{display:flex;gap:4px;}
+.sidebar-head .method-toggle button{
+  background:transparent;border:1px solid var(--amber-faint);
+  color:var(--amber-dim);font-family:var(--font);
+  font-size:9px;letter-spacing:0.08em;
+  padding:3px 8px;border-radius:3px;cursor:pointer;transition:all .15s;
+}
+.sidebar-head .method-toggle button.active{
+  background:var(--amber-faint);color:var(--amber-bright);border-color:var(--amber-dim);
+}
+.sidebar-head .method-toggle button:hover{border-color:var(--amber-dim);}
+
+.new-chat-btn{
+  background:transparent;border:1px solid var(--amber-faint);
+  color:var(--amber-dim);font-family:var(--font);
+  font-size:9px;letter-spacing:0.08em;
+  padding:3px 8px;border-radius:3px;cursor:pointer;transition:all .15s;
+}
+.new-chat-btn:hover{color:var(--amber-bright);border-color:var(--amber-dim);}
+
+.card.active-session{border-color:var(--amber-dim);background:rgba(255,176,0,0.08);}
+
+.sidebar-section{
+  border-bottom:1px solid var(--line);
+  flex-shrink:0;
+}
+.sidebar-section-head{
+  padding:10px 16px;font-size:10px;letter-spacing:0.12em;
+  color:var(--amber-dim);display:flex;align-items:center;justify-content:space-between;
+}
+.sidebar-section-body{
+  padding:0 14px 10px 14px;
+  max-height:180px;overflow-y:auto;
+}
+.sidebar-section-body::-webkit-scrollbar{width:6px;}
+.sidebar-section-body::-webkit-scrollbar-thumb{background:var(--amber-faint);border-radius:3px;}
+
+.file-item{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 8px;border-radius:3px;cursor:pointer;
+  font-size:11px;color:var(--amber-dim);
+  transition:all .15s;border:1px solid transparent;
+}
+.file-item:hover{background:rgba(255,176,0,0.05);border-color:var(--amber-faint);}
+.file-item.selected{background:rgba(255,176,0,0.1);border-color:var(--amber-dim);color:var(--amber-bright);}
+.file-item .cb{
+  width:12px;height:12px;border:1px solid var(--amber-faint);
+  border-radius:2px;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;font-size:9px;transition:all .15s;
+}
+.file-item.selected .cb{background:var(--amber-faint);border-color:var(--amber-dim);color:var(--amber-bright);}
+.file-item .fname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.file-item .fchunks{font-size:9px;color:var(--amber-faint);}
+.file-item .fdel{
+  width:16px;height:16px;display:flex;align-items:center;justify-content:center;
+  color:var(--amber-faint);font-size:12px;cursor:pointer;border-radius:2px;
+  transition:all .15s;flex-shrink:0;
+}
+.file-item .fdel:hover{color:var(--red);background:rgba(255,68,51,0.1);}
+
+.drawer{
+  flex:1;overflow-y:auto;padding:14px;
+  display:flex;flex-direction:column;gap:10px;
+}
+.drawer::-webkit-scrollbar{width:6px;}
+.drawer::-webkit-scrollbar-thumb{background:var(--amber-faint);border-radius:3px;}
+
+.card{
+  background:var(--card);border:1px solid var(--amber-faint);
+  border-radius:4px;padding:10px 12px;font-size:11.5px;
+  opacity:0;transform:translateX(18px);
+  animation:slideIn .35s ease forwards;position:relative;
+  padding-right:30px;
+}
+.card .src{
+  color:var(--amber-bright);font-weight:700;margin-bottom:4px;
+  display:flex;justify-content:space-between;gap:6px;
+}
+.card .score{color:var(--green-ok);font-size:10px;}
+.card .snippet{color:var(--amber-dim);line-height:1.5;}
+.card .delbtn{
+  position:absolute;top:8px;right:8px;
+  width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+  color:var(--amber-faint);font-size:11px;cursor:pointer;border-radius:3px;
+  transition:all .15s;z-index:10;
+  font-family:var(--font);font-weight:700;
+  line-height:1;text-align:center;
+}
+.card .delbtn:hover{color:var(--red);background:rgba(255,68,51,0.2);}
+
+@keyframes slideIn{
+  to{opacity:1;transform:translateX(0);}
+}
+
+.empty-drawer{
+  color:var(--amber-faint);font-size:11.5px;
+  padding:10px 4px;line-height:1.6;
+}
+
+.boot{
+  position:fixed;inset:0;
+  background:#000;color:var(--amber);
+  font-family:var(--font);font-size:13px;
+  padding:40px;z-index:50;
+  white-space:pre-wrap;line-height:1.7;
+}
+.boot.hidden{display:none;}
+
+.upload-area{
+  padding:8px 14px;border-top:1px solid var(--line);flex-shrink:0;
+}
+.upload-btn{
+  background:transparent;border:1px solid var(--amber-faint);
+  color:var(--amber-dim);font-family:var(--font);
+  font-size:10px;letter-spacing:0.08em;
+  padding:4px 10px;border-radius:3px;cursor:pointer;transition:all .15s;
+  width:100%;
+}
+.upload-btn:hover{color:var(--amber-bright);border-color:var(--amber-dim);}
+#fileInput{display:none;}
+.upload-msg{font-size:10px;margin-top:6px;display:none;}
+.selected-info{
+  font-size:9px;color:var(--amber-faint);padding:4px 14px;
+  border-bottom:1px solid var(--line);flex-shrink:0;
+  display:none;
+}
+.selected-info.visible{display:block;}
+</style>
+</head>
+<body>
+
+<div class="boot" id="boot"></div>
+
+<div class="bezel">
+  <div class="crt-panel">
+    <canvas id="cv"></canvas>
+  </div>
+  <div class="screen">
+    <div class="statusbar">
+      <div class="left">
+        <span class="dot"></span>
+        <span class="title">RAG-OS</span>
+        <span>v1.0</span>
+      </div>
+      <div class="right">
+        <span id="clock">00:00:00</span>
+        <span>INDEX: <span style="color:var(--green-ok)">ONLINE</span></span>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button type="submit" class="logout-button">SIGN OUT</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="console">
+        <div class="log" id="log">
+          <div class="sys-line">RAG-OS terminal ready. Type a question and press ENTER or SEND.</div>
+          <div class="sys-line">Connected corpus: <span class="ok">document index (live)</span></div>
+        </div>
+        <div class="inputrow">
+          <span class="chevron">&gt;</span>
+          <input id="queryInput" type="text" placeholder="ask the index something..." autocomplete="off">
+          <button class="send" id="sendBtn">SEND</button>
+        </div>
+      </div>
+
+      <div class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <span>CHATS</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button class="new-chat-btn" onclick="startNewChat()" title="New Chat">+NEW</button>
+            <div class="method-toggle">
+              <button onclick="setMethod('simple',this)">SIM</button>
+              <button onclick="setMethod('bm25',this)">BM25</button>
+              <button onclick="setMethod('vector',this)">VEC</button>
+              <button class="active" onclick="setMethod('hybrid',this)">HYB</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <span>DOCUMENTS</span>
+            <span id="docCount">0</span>
+          </div>
+          <div class="sidebar-section-body" id="docList">
+            <div class="empty-drawer">No documents uploaded.</div>
+          </div>
+        </div>
+        <div class="selected-info" id="selectedInfo">Searching in: <span id="selectedNames">all documents</span></div>
+
+        <div class="drawer" id="drawer">
+          <div class="empty-drawer">No queries yet. Submit a question to start.</div>
+        </div>
+
+        <div class="upload-area">
+          <input type="file" id="fileInput" accept=".docx,.pdf" onchange="uploadFile(this)">
+          <button class="upload-btn" onclick="document.getElementById('fileInput').click()">+ UPLOAD DOCX/PDF</button>
+          <div class="upload-msg" id="uploadMsg"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ========== CRT CANVAS ========== */
+(function() {
+    var c = document.getElementById('cv');
+    if (!c) return;
+
+    var isMobile = window.innerWidth <= 1024;
+    var dpr = (window.devicePixelRatio || 1) * 3;
+    c.width = 200 * dpr;
+    c.height = 138 * dpr;
+    var ctx = c.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    var code = ['SUB SP, 04h','CMP AX, BX','JNE 0x00FF','CALL 0x1A3F','ADD DX, 1','MOV AX, [SI]','PUSH BP','INT 0x21','RET'];
+    var ln = 0, ch = 0, vis = [], tick = 0;
+    var ART_OFFSET_X = 25;
+    var isVisible = true;
+    var animId = null;
+    var speedMultiplier = isMobile ? 1.5 : 1;
+
+    if (typeof IntersectionObserver !== 'undefined') {
+        var visObserver = new IntersectionObserver(function(entries){
+            isVisible = entries[0].isIntersecting;
+            if (isVisible && !animId) {
+                animId = requestAnimationFrame(draw);
+            }
+        }, { threshold: 0 });
+        visObserver.observe(c);
+    }
+
+    function draw(t) {
+        if (!isVisible) { animId = null; return; }
+
+        var scaleX = 200 / 260;
+        var scaleY = 138 / 180;
+        ctx.setTransform(dpr * scaleX, 0, 0, dpr * scaleY, 0, 0);
+        ctx.clearRect(0, 0, 260, 180);
+        ctx.save();
+        ctx.translate(ART_OFFSET_X, 0);
+        ctx.direction = 'ltr';
+        ctx.textAlign = 'left';
+
+        ctx.fillStyle = '#c8b99a';
+        ctx.fillRect(20, 0, 170, 105);
+        ctx.strokeStyle = '#a89a7a';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(20, 0, 170, 105);
+
+        ctx.fillStyle = '#b5a585';
+        ctx.fillRect(26, 5, 158, 85);
+
+        ctx.fillStyle = '#0a1a0a';
+        ctx.fillRect(32, 8, 146, 74);
+
+        for (var i = 0; i < 74; i += 2) {
+            ctx.fillStyle = 'rgba(0,0,0,0.1)';
+            ctx.fillRect(32, 8 + i, 146, 1);
+        }
+
+        var typeSpeed = 55 * speedMultiplier;
+        if (t - tick > typeSpeed && ln < code.length) {
+            tick = t; ch++;
+            if (ch > code[ln].length) {
+                vis.push(code[ln]);
+                if (vis.length > 4) vis.shift();
+                ln++; ch = 0;
+            }
+        }
+
+        ctx.font = 'bold 8px monospace';
+        ctx.fillStyle = '#00ff41';
+        ctx.shadowColor = '#00ff41';
+        ctx.shadowBlur = 3;
+        for (var j = 0; j < vis.length; j++) {
+            ctx.fillText('> ' + vis[j], 38, 22 + j * 14);
+        }
+        if (ln < code.length) {
+            ctx.fillText('> ' + code[ln].substring(0, ch), 38, 22 + vis.length * 14);
+        }
+
+        if (Math.floor(t / 500) % 2 === 0) {
+            var ct = 22 + vis.length * 14;
+            var cw = ctx.measureText('> ' + (ln < code.length ? code[ln].substring(0, ch) : '')).width;
+            ctx.fillRect(38 + cw + 1, ct - 6, 5, 8);
+        }
+        ctx.shadowBlur = 0;
+
+        if (ln >= code.length && t - tick > 2500) {
+            ln = 0; ch = 0; vis = []; tick = t;
+        }
+
+        ctx.fillStyle = '#b5a585';
+        ctx.fillRect(98, 105, 14, 7);
+        ctx.fillStyle = '#a89a7a';
+        ctx.fillRect(88, 112, 34, 4);
+        ctx.fillStyle = '#9a8a6a';
+        ctx.fillRect(82, 116, 46, 3);
+
+        ctx.fillStyle = '#c8b99a';
+        ctx.fillRect(14, 124, 182, 28);
+        ctx.strokeStyle = '#a89a7a';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(14, 124, 182, 28);
+
+        for (var k = 0; k < 14; k++) {
+            ctx.fillStyle = '#b5a585';
+            ctx.fillRect(20 + k * 12, 127, 10, 6);
+        }
+        for (var k2 = 0; k2 < 13; k2++) {
+            ctx.fillStyle = '#b5a585';
+            ctx.fillRect(24 + k2 * 12.5, 135, 11, 6);
+        }
+        ctx.fillStyle = '#b5a585';
+        ctx.fillRect(70, 143, 70, 5);
+
+        ctx.restore();
+        animId = requestAnimationFrame(draw);
+    }
+    animId = requestAnimationFrame(draw);
+})();
+
+/* ========== MAIN APP ========== */
+var searchMethod = 'hybrid';
+var busy = false;
+var selectedDocs = [];
+
+var logEl = document.getElementById('log');
+var drawerEl = document.getElementById('drawer');
+var inputEl = document.getElementById('queryInput');
+var sendBtnEl = document.getElementById('sendBtn');
+var docListEl = document.getElementById('docList');
+var docCountEl = document.getElementById('docCount');
+var selectedInfoEl = document.getElementById('selectedInfo');
+var selectedNamesEl = document.getElementById('selectedNames');
+
+function getCookie(name) {
+    var value = '; ' + document.cookie;
+    var parts = value.split('; ' + name + '=');
+    if (parts.length === 2) return parts.pop().split(';').shift();
+    return '';
+}
+
+function setMethod(method, btn) {
+    searchMethod = method;
+    var btns = document.querySelectorAll('.method-toggle button');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+    btn.classList.add('active');
+}
+
+function scrollLog() { logEl.scrollTop = logEl.scrollHeight; }
+
+function addUserEntry(text) {
+    var entry = document.createElement('div');
+    entry.className = 'entry';
+    var pl = document.createElement('div');
+    pl.className = 'prompt-line';
+    pl.innerHTML = '<span class="chevron">&gt;</span>';
+    var ut = document.createElement('span');
+    ut.className = 'user-text';
+    ut.textContent = text;
+    pl.appendChild(ut);
+    entry.appendChild(pl);
+    logEl.appendChild(entry);
+    scrollLog();
+}
+
+function addSysLine(text, type) {
+    var line = document.createElement('div');
+    line.className = 'sys-line';
+    setSysLine(line, text, type);
+    logEl.appendChild(line);
+    scrollLog();
+    return line;
+}
+
+function setSysLine(line, text, type) {
+    line.replaceChildren();
+    if (type === 'ok' || type === 'err') {
+        var label = document.createElement('span');
+        label.className = type;
+        label.textContent = text;
+        line.appendChild(label);
+    } else {
+        line.textContent = text;
+    }
+}
+
+function addAnswerBlock() {
+    var block = document.createElement('div');
+    block.className = 'answer';
+    logEl.appendChild(block);
+    scrollLog();
+    return block;
+}
+
+function addSourceList(sources) {
+    if (!Array.isArray(sources) || sources.length === 0) return;
+    var details = document.createElement('details');
+    details.className = 'answer-sources';
+    var summary = document.createElement('summary');
+    summary.textContent = 'Sources (' + sources.length + ')';
+    details.appendChild(summary);
+    for (var i = 0; i < sources.length; i++) {
+        var source = sources[i];
+        var item = document.createElement('div');
+        item.className = 'source-item';
+        var label = document.createElement('div');
+        label.textContent = '[Source ' + (source.index || i + 1) + '] ' +
+            (source.document || 'Document') + ' · page ' + (source.page || 1) +
+            ' · chunk ' + (source.chunk_index == null ? '?' : source.chunk_index);
+        item.appendChild(label);
+        if (source.preview) {
+            var preview = document.createElement('div');
+            preview.className = 'source-preview';
+            preview.textContent = source.preview;
+            item.appendChild(preview);
+        }
+        details.appendChild(item);
+    }
+    logEl.appendChild(details);
+    scrollLog();
+}
+
+function typeInto(el, text, speed) {
+    speed = speed || 12;
+    return new Promise(function(resolve) {
+        var i = 0;
+        var cursor = document.createElement('span');
+        cursor.className = 'cursor-blink';
+        function step() {
+            if (i < text.length) {
+                el.textContent = text.slice(0, i + 1);
+                el.appendChild(cursor);
+                i++;
+                scrollLog();
+                setTimeout(step, speed);
+            } else {
+                cursor.remove();
+                resolve();
+            }
+        }
+        step();
+    });
+}
+
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatTimeAgo(dateStr) {
+    if (!dateStr) return '';
+    var now = new Date();
+    var date = new Date(dateStr);
+    var diff = Math.floor((now - date) / 1000);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+}
+
+/* ========== DOCUMENTS ========== */
+
+function loadDocuments() {
+    fetch('/documents/').then(function(res) {
+        return res.json();
+    }).then(function(data) {
+        renderDocuments(data);
+    }).catch(function() {});
+}
+
+function renderDocuments(docs) {
+    docListEl.innerHTML = '';
+    docCountEl.textContent = docs.length;
+    if (docs.length === 0) {
+        docListEl.innerHTML = '<div class="empty-drawer">No documents uploaded.</div>';
+        return;
+    }
+    for (var i = 0; i < docs.length; i++) {
+        var doc = docs[i];
+        var item = document.createElement('div');
+        item.className = 'file-item';
+        if (selectedDocs.indexOf(doc.id) !== -1) item.classList.add('selected');
+        item.setAttribute('data-id', doc.id);
+
+        var cb = document.createElement('div');
+        cb.className = 'cb';
+        cb.textContent = selectedDocs.indexOf(doc.id) !== -1 ? 'x' : '';
+
+        var fname = document.createElement('span');
+        fname.className = 'fname';
+        fname.textContent = doc.title;
+        fname.title = doc.title;
+
+        var fstatus = document.createElement('span');
+        fstatus.className = 'fstatus';
+        fstatus.textContent = doc.status;
+        fstatus.title = 'Status: ' + doc.status;
+        if (doc.status === 'processing' || doc.status === 'pending_processing' || doc.status === 'extracting_text' || doc.status === 'chunking' || doc.status === 'indexing') {
+            fstatus.style.color = 'var(--amber-dim)';
+        } else if (doc.status === 'ready') {
+            fstatus.style.color = 'var(--green-ok)';
+        } else if (doc.status === 'failed') {
+            fstatus.style.color = 'var(--red)';
+        }
+
+        var fchunks = document.createElement('span');
+        fchunks.className = 'fchunks';
+        fchunks.textContent = doc.chunks + 'ch';
+
+        var fdel = document.createElement('span');
+        fdel.className = 'fdel';
+        fdel.textContent = 'x';
+        fdel.title = 'Delete document';
+
+        (function(d, el, cbEl) {
+            fname.addEventListener('click', function() { toggleDoc(d.id, el, cbEl); });
+            cbEl.addEventListener('click', function() { toggleDoc(d.id, el, cbEl); });
+            fdel.addEventListener('click', function(e) {
+                e.stopPropagation();
+                deleteDoc(d.id, d.title);
+            });
+        })(doc, item, cb);
+
+        item.appendChild(cb);
+        item.appendChild(fname);
+        item.appendChild(fstatus);
+        item.appendChild(fchunks);
+        item.appendChild(fdel);
+        docListEl.appendChild(item);
+    }
+    updateSelectedInfo();
+}
+
+function toggleDoc(id, el, cbEl) {
+    var idx = selectedDocs.indexOf(id);
+    if (idx === -1) {
+        selectedDocs.push(id);
+        el.classList.add('selected');
+        cbEl.textContent = 'x';
+    } else {
+        selectedDocs.splice(idx, 1);
+        el.classList.remove('selected');
+        cbEl.textContent = '';
+    }
+    updateSelectedInfo();
+}
+
+function updateSelectedInfo() {
+    if (selectedDocs.length === 0) {
+        selectedInfoEl.classList.remove('visible');
+    } else {
+        selectedInfoEl.classList.add('visible');
+        var names = [];
+        var items = docListEl.querySelectorAll('.file-item.selected .fname');
+        for (var i = 0; i < items.length; i++) names.push(items[i].textContent);
+        selectedNamesEl.textContent = names.join(', ');
+    }
+}
+
+function deleteDoc(id, title) {
+    if (!confirm('Delete "' + title + '"?')) return;
+    fetch('/documents/' + id + '/delete/', {
+        method: 'DELETE',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    }).then(function(res) {
+        if (!res.ok) throw new Error('Failed to delete document');
+        return res.json();
+    }).then(function(data) {
+        var idx = selectedDocs.indexOf(id);
+        if (idx !== -1) selectedDocs.splice(idx, 1);
+        loadDocuments();
+        addSysLine('[OK] deleted document: ' + title, 'ok');
+    }).catch(function() {
+        addSysLine('[ERR] failed to delete document', 'err');
+    });
+}
+
+/* ========== SESSIONS ========== */
+
+var currentSessionId = null;
+
+function renderSessions(sessions) {
+    drawerEl.innerHTML = '';
+    if (!sessions || sessions.length === 0) {
+        drawerEl.innerHTML = '<div class="empty-drawer">No chats yet. Submit a question to start.</div>';
+        return;
+    }
+    for (var idx = 0; idx < sessions.length; idx++) {
+        var session = sessions[idx];
+        var card = document.createElement('div');
+        card.className = 'card';
+        if (session.id === currentSessionId) card.classList.add('active-session');
+        card.style.animationDelay = (idx * 0.08) + 's';
+        card.style.cursor = 'pointer';
+        var timeAgo = formatTimeAgo(session.updated_at);
+        var msgCount = session.message_count || 0;
+
+        var delbtn = document.createElement('span');
+        delbtn.className = 'delbtn';
+        delbtn.textContent = 'X';
+        delbtn.title = 'Delete this chat';
+
+        var titleText = session.title || 'Chat ' + session.id;
+        card.innerHTML = '<div class="src"><span class="score">' + timeAgo + ' - ' + msgCount + ' msgs</span></div>' +
+            '<div class="snippet" style="color:var(--amber-bright);margin-bottom:4px;">' + escapeHtml(titleText) + '</div>';
+
+        (function(s, c, d) {
+            c.addEventListener('click', function(e) {
+                if (e.target === d) return;
+                loadSession(s);
+            });
+            d.addEventListener('click', function(e) {
+                e.stopPropagation();
+                deleteSession(s.id, c);
+            });
+        })(session, card, delbtn);
+
+        card.appendChild(delbtn);
+        drawerEl.appendChild(card);
+    }
+}
+
+function loadSession(session) {
+    currentSessionId = session.id;
+    logEl.innerHTML = '';
+
+    addSysLine('Loaded chat: ' + (session.title || 'Chat ' + session.id));
+
+    if (session.messages && session.messages.length > 0) {
+        for (var i = 0; i < session.messages.length; i++) {
+            var msg = session.messages[i];
+            addUserEntry(msg.question);
+            var block = addAnswerBlock();
+            block.textContent = msg.answer;
+            addSourceList(msg.sources);
+        }
+    }
+
+    loadSessions();
+}
+
+function loadSessions() {
+    fetch('/api/sessions/').then(function(res) {
+        return res.json();
+    }).then(function(data) {
+        renderSessions(data);
+    }).catch(function() {});
+}
+
+function deleteSession(id, cardEl) {
+    if (!confirm('Delete this chat?')) return;
+    fetch('/api/sessions/' + id + '/delete/', {
+        method: 'DELETE',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') }
+    }).then(function(res) {
+        if (!res.ok) throw new Error('Failed');
+        return res.json();
+    }).then(function(data) {
+        if (currentSessionId === id) currentSessionId = null;
+        cardEl.style.opacity = '0';
+        cardEl.style.transform = 'translateX(50px)';
+        cardEl.style.transition = 'all 0.3s ease';
+        setTimeout(function() {
+            cardEl.remove();
+            if (!drawerEl.querySelector('.card')) {
+                drawerEl.innerHTML = '<div class="empty-drawer">No chats yet. Submit a question to start.</div>';
+            }
+        }, 300);
+    }).catch(function() {
+        addSysLine('[ERR] failed to delete chat', 'err');
+    });
+}
+
+function startNewChat() {
+    currentSessionId = null;
+    logEl.innerHTML = '<div class="sys-line">RAG-OS terminal ready. Type a question and press ENTER or SEND.</div>' +
+        '<div class="sys-line">Connected corpus: <span class="ok">document index (live)</span></div>';
+}
+
+/* ========== UPLOAD ========== */
+
+function uploadFile(input) {
+    var file = input.files[0];
+    if (!file) return;
+    var msg = document.getElementById('uploadMsg');
+    msg.style.display = 'block';
+    msg.style.color = 'var(--amber-dim)';
+    msg.textContent = 'uploading...';
+    var formData = new FormData();
+    formData.append('file', file);
+    fetch('/upload/', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        body: formData
+    }).then(function(res) {
+        return res.json().then(function(data) { return { ok: res.ok, data: data }; });
+    }).then(function(result) {
+        if (result.ok) {
+            msg.style.color = 'var(--green-ok)';
+            msg.textContent = result.data.message || 'uploaded!';
+            addSysLine('[OK] document ingested: ' + file.name, 'ok');
+            loadDocuments();
+            var docId = result.data.document_id;
+            if (docId) {
+                pollDocumentStatus(docId, file.name);
+            }
+        } else {
+            msg.style.color = 'var(--red)';
+            msg.textContent = result.data.error || 'upload failed';
+            addSysLine('[ERR] upload failed: ' + (result.data.error || 'unknown'), 'err');
+        }
+    }).catch(function() {
+        msg.style.color = 'var(--red)';
+        msg.textContent = 'upload error';
+        addSysLine('[ERR] upload connection error', 'err');
+    });
+    input.value = '';
+    setTimeout(function() { msg.style.display = 'none'; }, 4000);
+}
+
+function pollDocumentStatus(docId, fileName) {
+    var attempts = 0;
+    var maxAttempts = 60;
+    var interval = 2000;
+    var statusLine = addSysLine('[..] processing: ' + fileName + '...', 'sys');
+
+    function check() {
+        attempts++;
+        fetch('/documents/' + docId + '/status/').then(function(res) {
+            return res.json();
+        }).then(function(data) {
+            if (data.status === 'ready') {
+                setSysLine(statusLine, '[OK] ready: ' + fileName + ' (' + data.chunks + ' chunks)', 'ok');
+                loadDocuments();
+            } else if (data.status === 'failed') {
+                setSysLine(statusLine, '[ERR] failed: ' + fileName + ' - ' + (data.error_message || 'unknown error'), 'err');
+                loadDocuments();
+            } else if (attempts < maxAttempts) {
+                setTimeout(check, interval);
+            } else {
+                setSysLine(statusLine, '[ERR] timeout: ' + fileName + ' still processing', 'err');
+            }
+        }).catch(function() {
+            if (attempts < maxAttempts) {
+                setTimeout(check, interval);
+            }
+        });
+    }
+    setTimeout(check, interval);
+}
+
+/* ========== QUERY ========== */
+
+function submitQuery() {
+    var q = inputEl.value.trim();
+    if (!q || busy) return;
+    busy = true;
+    inputEl.value = '';
+    sendBtnEl.disabled = true;
+
+    addUserEntry(q);
+    var status = addSysLine('querying index...');
+
+    var body = { question: q, search_method: searchMethod };
+    if (selectedDocs.length > 0) body.document_ids = selectedDocs;
+    if (currentSessionId) body.session_id = currentSessionId;
+
+    fetch('/api/ask/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify(body)
+    }).then(function(res) {
+        if (!res.ok) {
+            return res.json().catch(function() { return {}; }).then(function(errData) {
+                throw new Error(errData.error || errData.answer || errData.detail ||
+                    'Server error (' + res.status + ')');
+            });
+        }
+        return res.json();
+    }).then(function(data) {
+        currentSessionId = data.session_id;
+        setSysLine(status, '[OK] retrieved - answer synthesized', 'ok');
+        loadSessions();
+        var block = addAnswerBlock();
+        return typeInto(block, data.answer || 'No answer received.', 8).then(function() {
+            addSourceList(data.sources);
+            addSysLine('session: ' + data.session_id + ' - method: ' + data.search_method);
+        });
+    }).catch(function(err) {
+        setSysLine(status, '[ERR] ' + err.message, 'err');
+    }).then(function() {
+        busy = false;
+        sendBtnEl.disabled = false;
+        inputEl.focus();
+    });
+}
+
+sendBtnEl.addEventListener('click', submitQuery);
+inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') submitQuery();
+});
+
+/* ========== BOOT ========== */
+
+var bootLines = [
+    "RAG-OS v1.0 - initializing...",
+    "[OK] loading document index",
+    "[OK] connecting to retrieval backend",
+    "[OK] Chroma + BM25 hybrid search ready",
+    "[OK] terminal handshake complete",
+    "",
+    "ready."
+];
+var bootEl = document.getElementById('boot');
+var bi = 0;
+function typeBoot() {
+    if (bi < bootLines.length) {
+        bootEl.textContent += bootLines[bi] + "\n";
+        bi++;
+        setTimeout(typeBoot, 160);
+    } else {
+        setTimeout(function() {
+            bootEl.classList.add('hidden');
+        }, 350);
+    }
+}
+typeBoot();
+
+function tickClock() {
+    var d = new Date();
+    document.getElementById('clock').textContent = d.toTimeString().slice(0, 8);
+}
+tickClock();
+setInterval(tickClock, 1000);
+
+setTimeout(function() { inputEl.focus(); }, 1200);
+loadDocuments();
+loadSessions();
+</script>
+
+</body>
+</html>

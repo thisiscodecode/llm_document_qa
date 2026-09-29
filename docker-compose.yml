@@ -3,6 +3,24 @@ services:
     build: .
     container_name: llm_document_qa
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_SESSION_COOKIE_SECURE: ${DJANGO_SESSION_COOKIE_SECURE:-false}
+      DJANGO_CSRF_COOKIE_SECURE: ${DJANGO_CSRF_COOKIE_SECURE:-false}
+      DJANGO_SERVE_STATIC: "true"
+      DJANGO_DB_PATH: /app/data/db.sqlite3
+      DJANGO_MEDIA_ROOT: /app/media
+      CHROMA_PATH: /app/chroma_db
+    volumes:
+      - sqlite_data:/app/data
+      - media_data:/app/media
+      - chroma_data:/app/chroma_db
+
+volumes:
+  sqlite_data:
+  media_data:
+  chroma_data:

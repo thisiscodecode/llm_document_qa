@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Document QA</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, Consolas, monospace; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center;
+           background: #15120b; color: #f5bd55; }
+    main { width: min(90vw, 400px); padding: 28px; border: 1px solid #6d4a17;
+           background: #211a0e; box-shadow: 0 0 32px #0008; }
+    h1 { margin: 0 0 22px; font-size: 23px; }
+    label { display: block; margin: 14px 0 6px; font-size: 13px; }
+    input { box-sizing: border-box; width: 100%; padding: 10px; color: #fff3d5;
+            background: #120e08; border: 1px solid #8d6325; font: inherit; }
+    input:focus { outline: 2px solid #f5bd55; outline-offset: 2px; }
+    button { margin-top: 22px; width: 100%; padding: 10px; border: 1px solid #f5bd55;
+             background: #3c2a10; color: #ffe3a3; font: inherit; cursor: pointer; }
+    .errors { color: #ff8b7a; font-size: 13px; }
+    a { color: #ffe3a3; }
+    footer { margin-top: 20px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Document QA · Sign in</h1>
+    {% if form.errors %}
+      <p class="errors" role="alert">Sign-in failed. Check your username and password.</p>
+    {% endif %}
+    <form method="post" action="{% url 'login' %}">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="id_username">Username</label>
+      <input id="id_username" name="username" autocomplete="username" required autofocus>
+      <label for="id_password">Password</label>
+      <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+    <footer><a href="/">Back to the app</a></footer>
+  </main>
+</body>
+</html>
