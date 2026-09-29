@@ -653,6 +653,6 @@ This project is licensed under the **MIT License**.
 
 ---
 
-## 👥 Author
+## 👤 Author
 
-Built by the **codecode** team.
+Created and maintained by **Mahyar**.
