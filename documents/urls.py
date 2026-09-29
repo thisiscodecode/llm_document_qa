@@ -7,6 +7,8 @@ from .views import (
     delete_session,
     evaluate,
     compare_methods,
+    system_stats,
+    feature_flags_admin,
 )
 
 
@@ -18,4 +20,6 @@ urlpatterns = [
     path("sessions/<int:session_id>/delete/", delete_session, name="delete-session"),
     path("evaluate/", evaluate, name="evaluate"),
     path("compare/", compare_methods, name="compare-methods"),
+    path("stats/", system_stats, name="system-stats"),
+    path("flags/", feature_flags_admin, name="feature-flags-admin"),
 ]

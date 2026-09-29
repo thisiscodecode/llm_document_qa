@@ -1,20 +1,15 @@
-import os
 import re
 import logging
-import pickle
-import numpy as np
 
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from rank_bm25 import BM25Okapi
 
-from .models import DocumentChunk, Document
+from .models import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
-VECTOR_INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vector_indexes')
-
-
 def _get_llm():
+    import os
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
     openrouter_model = os.getenv("OPENROUTER_MODEL")
 
@@ -30,22 +25,6 @@ def _get_llm():
         return client
     except Exception as e:
         logger.error(f"LLM initialization failed: {e}")
-        return None
-
-
-def _get_embeddings():
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        return None
-
-    try:
-        return OpenAIEmbeddings(
-            model="openai/text-embedding-3-small",
-            openai_api_key=api_key,
-            openai_api_base="https://openrouter.ai/api/v1",
-        )
-    except Exception as e:
-        logger.error(f"Embeddings initialization failed: {e}")
         return None
 
 
@@ -94,43 +73,9 @@ def retrieve_relevant_chunks_bm25(question, limit=5, document_ids=None):
 
 
 def retrieve_relevant_chunks_vector(question, limit=5, document_ids=None):
-    embeddings = _get_embeddings()
-    if not embeddings:
-        logger.warning("Embeddings not available, falling back to BM25")
-        return retrieve_relevant_chunks_bm25(question, limit, document_ids)
-
-    chunks = list(DocumentChunk.objects.all())
-    if document_ids:
-        chunks = list(DocumentChunk.objects.filter(document_id__in=document_ids))
-
-    if not chunks:
-        return []
-
     try:
-        import faiss
-
-        chunk_texts = [c.content for c in chunks]
-        query_embedding = embeddings.embed_query(question)
-        chunk_embeddings = embeddings.embed_documents(chunk_texts)
-
-        dimension = len(query_embedding)
-        index = faiss.IndexFlatL2(dimension)
-        index.add(np.array(chunk_embeddings, dtype=np.float32))
-
-        distances, indices = index.search(
-            np.array([query_embedding], dtype=np.float32),
-            min(limit, len(chunks))
-        )
-
-        results = []
-        for idx in indices[0]:
-            if 0 <= idx < len(chunks):
-                results.append(chunks[idx])
-        return results
-
-    except ImportError:
-        logger.warning("FAISS not installed, falling back to BM25")
-        return retrieve_relevant_chunks_bm25(question, limit, document_ids)
+        from .rag.retrievers.vector import search_vector
+        return search_vector(question, limit, document_ids)
     except Exception as e:
         logger.error(f"Vector search failed: {e}")
         return retrieve_relevant_chunks_bm25(question, limit, document_ids)
@@ -194,52 +139,11 @@ def retrieve_relevant_chunks(question, search_method="hybrid", limit=5, document
 
 
 def rebuild_vector_index(document_id=None):
-    try:
-        import faiss
-    except ImportError:
-        logger.warning("FAISS not installed, skipping vector index rebuild")
-        return False
-
-    os.makedirs(VECTOR_INDEX_DIR, exist_ok=True)
-
     if document_id:
-        chunks = list(DocumentChunk.objects.filter(document_id=document_id))
-        index_file = os.path.join(VECTOR_INDEX_DIR, f'doc_{document_id}.faiss')
-        mapping_file = os.path.join(VECTOR_INDEX_DIR, f'doc_{document_id}_mapping.pkl')
-    else:
-        chunks = list(DocumentChunk.objects.all())
-        index_file = os.path.join(VECTOR_INDEX_DIR, 'global.faiss')
-        mapping_file = os.path.join(VECTOR_INDEX_DIR, 'global_mapping.pkl')
-
-    if not chunks:
-        logger.info("No chunks to index")
-        return False
-
-    embeddings = _get_embeddings()
-    if not embeddings:
-        logger.warning("Embeddings not available, skipping vector index rebuild")
-        return False
-
-    try:
-        chunk_texts = [c.content for c in chunks]
-        chunk_embeddings = embeddings.embed_documents(chunk_texts)
-
-        dimension = len(chunk_embeddings[0])
-        index = faiss.IndexFlatL2(dimension)
-        index.add(np.array(chunk_embeddings, dtype=np.float32))
-
-        faiss.write_index(index, index_file)
-
-        mapping = {i: chunk.id for i, chunk in enumerate(chunks)}
-        with open(mapping_file, 'wb') as f:
-            pickle.dump(mapping, f)
-
-        logger.info(f"Vector index rebuilt: {len(chunks)} chunks indexed")
-        return True
-
-    except Exception as e:
-        logger.error(f"Vector index rebuild failed: {e}")
-        return False
+        from .indexing.index_sync import upsert_document_chunks
+        return upsert_document_chunks(document_id)
+    from .indexing.index_sync import rebuild_global_index
+    return rebuild_global_index()
 
 
 def generate_answer(question, search_method="hybrid", document_ids=None):
@@ -287,11 +191,14 @@ def generate_answer(question, search_method="hybrid", document_ids=None):
     prompt = f"""Answer the question using ONLY the provided context.
 
 Rules:
+- ALWAYS respond in the SAME LANGUAGE as the question (e.g., if the question is in Persian/Farsi, respond in Persian)
 - Give a SHORT, DIRECT answer for simple questions (who, what, where, when)
 - Only provide detailed answers when the question explicitly asks for details
 - Do NOT dump the entire document - only extract what's relevant
+- Use clean formatting: use bullet points or numbered lists for multiple items
 - Reference sources like [Source 1] when citing
 - If the answer is not in the context, say: "I could not find the answer in the uploaded documents."
+- For Persian responses, use proper Persian punctuation and formatting
 
 Context:
 {context}

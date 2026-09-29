@@ -358,8 +358,10 @@ html,body{
           <div style="display:flex;gap:6px;align-items:center;">
             <button class="new-chat-btn" onclick="startNewChat()" title="New Chat">+NEW</button>
             <div class="method-toggle">
-              <button class="active" onclick="setMethod('simple',this)">SIM</button>
+              <button onclick="setMethod('simple',this)">SIM</button>
               <button onclick="setMethod('bm25',this)">BM25</button>
+              <button onclick="setMethod('vector',this)">VEC</button>
+              <button class="active" onclick="setMethod('hybrid',this)">HYB</button>
             </div>
           </div>
         </div>
@@ -511,7 +513,7 @@ html,body{
 })();
 
 /* ========== MAIN APP ========== */
-var searchMethod = 'simple';
+var searchMethod = 'hybrid';
 var busy = false;
 var selectedDocs = [];
 
@@ -646,6 +648,18 @@ function renderDocuments(docs) {
         fname.textContent = doc.title;
         fname.title = doc.title;
 
+        var fstatus = document.createElement('span');
+        fstatus.className = 'fstatus';
+        fstatus.textContent = doc.status;
+        fstatus.title = 'Status: ' + doc.status;
+        if (doc.status === 'processing' || doc.status === 'pending_processing' || doc.status === 'extracting_text' || doc.status === 'chunking' || doc.status === 'indexing') {
+            fstatus.style.color = 'var(--amber-dim)';
+        } else if (doc.status === 'ready') {
+            fstatus.style.color = 'var(--green-ok)';
+        } else if (doc.status === 'failed') {
+            fstatus.style.color = 'var(--red)';
+        }
+
         var fchunks = document.createElement('span');
         fchunks.className = 'fchunks';
         fchunks.textContent = doc.chunks + 'ch';
@@ -666,6 +680,7 @@ function renderDocuments(docs) {
 
         item.appendChild(cb);
         item.appendChild(fname);
+        item.appendChild(fstatus);
         item.appendChild(fchunks);
         item.appendChild(fdel);
         docListEl.appendChild(item);
@@ -836,6 +851,10 @@ function uploadFile(input) {
             msg.textContent = result.data.message || 'uploaded!';
             addSysLine('[OK] document ingested: ' + file.name, 'ok');
             loadDocuments();
+            var docId = result.data.document_id;
+            if (docId) {
+                pollDocumentStatus(docId, file.name);
+            }
         } else {
             msg.style.color = 'var(--red)';
             msg.textContent = result.data.error || 'upload failed';
@@ -848,6 +867,37 @@ function uploadFile(input) {
     });
     input.value = '';
     setTimeout(function() { msg.style.display = 'none'; }, 4000);
+}
+
+function pollDocumentStatus(docId, fileName) {
+    var attempts = 0;
+    var maxAttempts = 60;
+    var interval = 2000;
+    var statusLine = addSysLine('[..] processing: ' + fileName + '...', 'sys');
+
+    function check() {
+        attempts++;
+        fetch('/documents/' + docId + '/status/').then(function(res) {
+            return res.json();
+        }).then(function(data) {
+            if (data.status === 'ready') {
+                statusLine.innerHTML = '<span class="ok">[OK] ready: ' + fileName + ' (' + data.chunks + ' chunks)</span>';
+                loadDocuments();
+            } else if (data.status === 'failed') {
+                statusLine.innerHTML = '<span class="err">[ERR] failed: ' + fileName + ' - ' + (data.error_message || 'unknown error') + '</span>';
+                loadDocuments();
+            } else if (attempts < maxAttempts) {
+                setTimeout(check, interval);
+            } else {
+                statusLine.innerHTML = '<span class="err">[ERR] timeout: ' + fileName + ' still processing</span>';
+            }
+        }).catch(function() {
+            if (attempts < maxAttempts) {
+                setTimeout(check, interval);
+            }
+        });
+    }
+    setTimeout(check, interval);
 }
 
 /* ========== QUERY ========== */
@@ -908,7 +958,7 @@ var bootLines = [
     "RAG-OS v1.0 - initializing...",
     "[OK] loading document index",
     "[OK] connecting to retrieval backend",
-    "[OK] hybrid search ready (simple + bm25)",
+    "[OK] Chroma + BM25 hybrid search ready",
     "[OK] terminal handshake complete",
     "",
     "ready."

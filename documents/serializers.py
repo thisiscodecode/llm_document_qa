@@ -80,7 +80,7 @@ class AskQuestionSerializer(serializers.Serializer):
 
     search_method = serializers.ChoiceField(
         choices=SEARCH_METHOD_CHOICES,
-        default="simple",
+        default="hybrid",
         required=False,
         help_text="Search method to use for retrieval"
     )

@@ -504,61 +504,23 @@ Advantages:
 
 
 
-\# Current Retrieval Limitations
+\# Retrieval Architecture
 
 
 
-Current retrieval is basic keyword matching.
+The recommended `hybrid` method combines BM25 lexical retrieval with
+metadata-filtered Chroma cosine search using reciprocal rank fusion. Retrieved
+candidates are reranked before a token-bounded context and source citations are
+built. `simple`, `bm25`, and `vector` remain available for comparison.
 
 
 
-Limitations:
+Document chunks remain authoritative in Django's database. Chroma is a derived,
+persistent index and can be rebuilt with:
 
 
 
-\- No semantic understanding
-
-\- No embeddings
-
-\- Weak ranking quality
-
-\- Sensitive to wording
-
-
-
-\---
-
-
-
-\# Planned Retrieval Improvements
-
-
-
-Future improvements include:
-
-
-
-\- BM25 ranking
-
-\- Inverted Index
-
-\- Embedding search
-
-\- Vector databases
-
-\- Hybrid retrieval
-
-
-
-Possible vector databases:
-
-
-
-\- ChromaDB
-
-\- FAISS
-
-\- Pinecone
+`python manage.py rebuild_chroma_index`
 
 
 
@@ -705,4 +667,3 @@ GitHub:
 https://github.com/Mahyarelect
 
 ```
-

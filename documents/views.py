@@ -1,3 +1,4 @@
+import uuid
 import logging
 
 from django.shortcuts import render
@@ -18,8 +19,10 @@ from .serializers import (
     DocumentChunkSerializer,
     ChatSessionSerializer,
 )
-from .services import generate_answer
-from .processing import process_document_async, validate_upload
+from .rag.answer_service import generate_answer
+from .ingestion.document_processor import process_document_async, get_task_queue
+from .ingestion.validators import validate_upload
+from .ingestion.chunkers import DOCUMENT_TYPE_CONFIGS
 from .evaluation import evaluate_retrieval, compare_search_methods
 
 logger = logging.getLogger(__name__)
@@ -45,24 +48,81 @@ def upload_document(request):
 
     try:
         owner = request.user if request.user.is_authenticated else None
+        document_type = request.POST.get('document_type', 'default')
+        chunk_size = request.POST.get('chunk_size')
+        chunk_overlap = request.POST.get('chunk_overlap')
+
+        config = DOCUMENT_TYPE_CONFIGS.get(document_type, DOCUMENT_TYPE_CONFIGS['default'])
+
         doc = Document.objects.create(
             title=file.name,
             file=file,
             owner=owner,
             status='uploaded',
+            document_type=document_type,
+            chunk_size=int(chunk_size) if chunk_size else config['chunk_size'],
+            chunk_overlap=int(chunk_overlap) if chunk_overlap else config['overlap'],
         )
 
-        process_document_async(doc.id)
+        task_id = process_document_async(doc.id)
 
         return JsonResponse({
             'message': f'Uploaded "{doc.title}". Processing in background.',
             'document_id': doc.id,
+            'task_id': task_id,
             'status': 'processing',
+            'document_type': document_type,
+            'chunk_size': doc.chunk_size,
+            'chunk_overlap': doc.chunk_overlap,
         })
 
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         return JsonResponse({'error': f'Upload failed: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def document_status(request, doc_id):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
+
+    try:
+        if request.user.is_authenticated:
+            doc = Document.objects.get(id=doc_id, owner=request.user)
+        else:
+            doc = Document.objects.get(id=doc_id, owner__isnull=True)
+    except Document.DoesNotExist:
+        return JsonResponse({'error': 'Document not found.'}, status=404)
+
+    task_queue = get_task_queue()
+    task_info = None
+    for tid, task in task_queue._tasks.items():
+        if task.document_id == doc_id:
+            task_info = {
+                'task_id': tid,
+                'status': task.status.value,
+                'started_at': str(task.started_at) if task.started_at else None,
+                'completed_at': str(task.completed_at) if task.completed_at else None,
+                'duration_seconds': task.duration_seconds,
+                'retry_count': task.retry_count,
+                'error': task.error,
+            }
+            break
+
+    return JsonResponse({
+        'document_id': doc.id,
+        'title': doc.title,
+        'status': doc.status,
+        'document_type': doc.document_type,
+        'chunk_size': doc.chunk_size,
+        'chunk_overlap': doc.chunk_overlap,
+        'chunks': doc.chunks.count(),
+        'error_message': doc.error_message,
+        'processed_at': doc.processed_at.isoformat() if doc.processed_at else None,
+        'created_at': doc.created_at.isoformat() if doc.created_at else None,
+        'task': task_info,
+        'valid_transitions': Document.VALID_TRANSITIONS.get(doc.status, []),
+    })
 
 
 @csrf_exempt
@@ -81,6 +141,7 @@ def list_documents(request):
             'id': doc.id,
             'title': doc.title,
             'status': doc.status,
+            'document_type': doc.document_type,
             'error_message': doc.error_message,
             'chunks': doc.chunks.count(),
             'processed_at': doc.processed_at.isoformat() if doc.processed_at else None,
@@ -94,17 +155,13 @@ def delete_document(request, doc_id):
     if request.method != 'DELETE':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
 
-    try:
-        if request.user.is_authenticated:
-            doc = Document.objects.get(id=doc_id, owner=request.user)
-        else:
-            doc = Document.objects.get(id=doc_id, owner__isnull=True)
+    from .ingestion.document_lifecycle import delete_document as delete_document_with_index
 
-        title = doc.title
-        doc.delete()
-        return JsonResponse({'message': f'Deleted "{title}".'})
-    except Document.DoesNotExist:
+    owner = request.user if request.user.is_authenticated else None
+    result = delete_document_with_index(doc_id, owner=owner)
+    if not result['success']:
         return JsonResponse({'error': 'Document not found.'}, status=404)
+    return JsonResponse({'message': f'Deleted "{result["title"]}".'})
 
 
 class AskQuestionAPIView(generics.GenericAPIView):
@@ -118,9 +175,10 @@ class AskQuestionAPIView(generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
 
         question = serializer.validated_data["question"]
-        search_method = serializer.validated_data.get("search_method", "simple")
+        search_method = serializer.validated_data.get("search_method", "hybrid")
         document_ids = serializer.validated_data.get("document_ids", [])
         session_id = serializer.validated_data.get("session_id")
+        request_id = str(uuid.uuid4())[:8]
 
         owner = request.user if request.user.is_authenticated else None
 
@@ -179,12 +237,15 @@ class AskQuestionAPIView(generics.GenericAPIView):
                 "sources": [],
                 "history_id": None,
                 "session_id": session.id,
+                "request_id": request_id,
             })
 
         result = generate_answer(
             question=question,
             search_method=search_method,
             document_ids=document_ids if document_ids else None,
+            owner=owner,
+            request_id=request_id,
         )
 
         if not isinstance(result, dict):
@@ -214,6 +275,9 @@ class AskQuestionAPIView(generics.GenericAPIView):
             "sources": result.get("sources", []),
             "history_id": history.id,
             "session_id": session.id,
+            "request_id": result.get("request_id", request_id),
+            "cache_hit": result.get("cache_hit", False),
+            "web_search_used": result.get("web_search_used", False),
         }, status=status.HTTP_200_OK)
 
 
@@ -297,6 +361,40 @@ def delete_session(request, session_id):
 
 
 @csrf_exempt
+def system_stats(request):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'Method not allowed.'}, status=405)
+
+    from .rag.cache import get_all_cache_stats
+    from .rag.feature_flags import list_flags
+    from .indexing.vector_index import get_mapping_stats
+    from .ingestion.document_processor import get_task_queue
+
+    task_queue = get_task_queue()
+    tasks = task_queue._tasks
+
+    return JsonResponse({
+        'cache': get_all_cache_stats(),
+        'feature_flags': list_flags(),
+        'vector_store': get_mapping_stats(),
+        'task_queue': {
+            'pending': sum(1 for t in tasks.values() if t.status.value == 'pending'),
+            'processing': sum(1 for t in tasks.values() if t.status.value == 'processing'),
+            'completed': sum(1 for t in tasks.values() if t.status.value == 'completed'),
+            'failed': sum(1 for t in tasks.values() if t.status.value == 'failed'),
+            'total': len(tasks),
+        },
+        'documents': {
+            'total': Document.objects.count(),
+            'ready': Document.objects.filter(status='ready').count(),
+            'processing': Document.objects.filter(status__in=['processing', 'pending_processing', 'extracting_text', 'chunking', 'indexing']).count(),
+            'failed': Document.objects.filter(status='failed').count(),
+        },
+        'chunk_configs': DOCUMENT_TYPE_CONFIGS,
+    })
+
+
+@csrf_exempt
 def evaluate(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'Method not allowed.'}, status=405)
@@ -338,3 +436,32 @@ def compare_methods(request):
 
     result = compare_search_methods(document_ids=document_ids)
     return JsonResponse(result)
+
+
+@csrf_exempt
+def feature_flags_admin(request):
+    from .rag.feature_flags import list_flags, get_flag, update_flag
+
+    if request.method == 'GET':
+        return JsonResponse({'flags': list_flags()})
+
+    elif request.method == 'POST':
+        import json
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+        name = data.get('name')
+        if not name:
+            return JsonResponse({'error': 'Missing flag name'}, status=400)
+
+        rollout_pct = data.get('rollout_pct')
+        variants = data.get('variants')
+
+        if not update_flag(name, rollout_pct=rollout_pct, variants=variants):
+            return JsonResponse({'error': f'Flag {name} not found'}, status=404)
+
+        return JsonResponse({'flag': get_flag(name)})
+
+    return JsonResponse({'error': 'Method not allowed'}, status=405)

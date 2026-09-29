@@ -36,8 +36,8 @@ This makes the answer more focused, more document-aware, and more efficient than
 | API Layer          | Django REST Framework       |
 | AI / LLM Layer     | LangChain, OpenRouter       |
 | Document Parsing   | python-docx                 |
-| Retrieval          | Simple Keyword Search, BM25 |
-| Database           | SQLite                      |
+| Retrieval          | Chroma vector search, BM25, hybrid RRF |
+| Database           | SQLite + Chroma             |
 | Admin Panel        | Django Admin                |
 | Environment Config | python-dotenv               |
 | Containerization   | Docker, Docker Compose      |
@@ -58,7 +58,7 @@ Text Extraction
      ↓
 Document Chunking
      ↓
-SQLite Database
+SQLite + persistent Chroma vector store
      ↓
 Question API
      ↓
@@ -95,12 +95,14 @@ This prepares the document for fast retrieval later.
 
 When a question is submitted, the backend searches the saved chunks and selects the most relevant ones.
 
-The project supports two search methods:
+The project supports four search methods:
 
 | Method   | Description                                     |
 | -------- | ----------------------------------------------- |
 | `simple` | Basic keyword-based matching                    |
 | `bm25`   | Ranked information retrieval using BM25 scoring |
+| `vector` | Semantic cosine search over Chroma embeddings   |
+| `hybrid` | BM25 + vector search combined with reciprocal rank fusion |
 
 BM25 helps improve search quality by ranking chunks based on relevance instead of only checking direct keyword overlap.
 
@@ -309,6 +311,8 @@ Create a `.env` file in the project root:
 ```env
 OPENROUTER_API_KEY=your_openrouter_api_key
 OPENROUTER_MODEL=your_selected_model
+OPENROUTER_EMBEDDING_MODEL=openai/text-embedding-3-small
+CHROMA_PATH=chroma_db
 ```
 
 Example:
@@ -324,6 +328,12 @@ OPENROUTER_MODEL=openrouter/free
 ```bash
 python manage.py makemigrations
 python manage.py migrate
+```
+
+If the project already contains processed chunks, build Chroma after migrating:
+
+```bash
+python manage.py rebuild_chroma_index
 ```
 
 ---
@@ -464,6 +474,21 @@ It scores chunks based on how relevant they are to the question and returns the 
 
 ---
 
+## Vector and Hybrid Search
+
+Vector search uses Chroma cosine similarity. Hybrid search is the recommended
+default: it fuses Chroma semantic results with BM25 lexical results before
+reranking and building a token-bounded context.
+
+```json
+{
+  "question": "What skills are mentioned?",
+  "search_method": "hybrid"
+}
+```
+
+---
+
 ## 🐳 Docker Setup
 
 ## Build Docker Image
@@ -510,6 +535,10 @@ http://127.0.0.1:8000/
 | -------------------- | -------- | ------------------------------------- |
 | `OPENROUTER_API_KEY` | Yes      | API key used to connect to OpenRouter |
 | `OPENROUTER_MODEL`   | Yes      | Selected LLM model name               |
+| `OPENROUTER_EMBEDDING_MODEL` | No | Embedding model (defaults to `openai/text-embedding-3-small`) |
+| `CHROMA_PATH` | No | Local persistent Chroma directory (defaults to `chroma_db`) |
+| `CHROMA_HOST` | No | Chroma server hostname for production client/server mode |
+| `CHROMA_PORT` | No | Chroma server port (defaults to `8000`) |
 
 Keep these values private and never commit them to Git.
 
@@ -522,7 +551,7 @@ Keep these values private and never commit them to Git.
 3. Upload a DOCX document.
 4. Let the system extract and chunk the text.
 5. Send a question to `/api/ask/`.
-6. Use `simple` or `bm25` search.
+6. Use the default `hybrid` search (or select `simple`, `bm25`, or `vector`).
 7. Review the generated answer.
 8. Check `/api/history/` to see saved questions and answers.
 
@@ -547,12 +576,8 @@ Before production use:
 
 ## ⚠️ Current Limitations
 
-* DOCX-only document support
 * SQLite database by default
-* No frontend included
 * No public API authentication by default
-* No vector database
-* No embeddings-based semantic search
 * No streaming responses
 
 ---
@@ -561,12 +586,8 @@ Before production use:
 
 Possible improvements for future versions:
 
-* PDF support
-* React or Next.js frontend
 * JWT authentication
 * PostgreSQL support
-* Vector search with FAISS or ChromaDB
-* Hybrid search using BM25 and embeddings
 * Streaming LLM responses
 * Chat-style conversation interface
 * File upload endpoint

@@ -18,11 +18,22 @@ class DocumentAdmin(admin.ModelAdmin):
     actions = ['reprocess_documents']
 
     def reprocess_documents(self, request, queryset):
-        from .processing import process_document
+        from .ingestion.document_processor import process_document
         for doc in queryset:
             process_document(doc.id)
         self.message_user(request, f"Reprocessing {queryset.count()} documents.")
     reprocess_documents.short_description = "Reprocess selected documents"
+
+    def delete_model(self, request, obj):
+        from .indexing.vector_index import delete_vectors_for_document
+        delete_vectors_for_document(obj.id)
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        from .indexing.vector_index import delete_vectors_for_document
+        for document_id in queryset.values_list('id', flat=True):
+            delete_vectors_for_document(document_id)
+        super().delete_queryset(request, queryset)
 
 
 @admin.register(DocumentChunk)

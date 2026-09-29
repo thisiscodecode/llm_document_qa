@@ -147,10 +147,10 @@ def process_document(document_id):
         doc.save(update_fields=['status', 'processed_at'])
 
         try:
-            from .services import rebuild_vector_index
-            rebuild_vector_index(document_id=doc.id)
+            from .indexing.index_sync import upsert_document_chunks
+            upsert_document_chunks(doc.id)
         except Exception as e:
-            logger.warning(f"Vector index rebuild failed for doc {doc.id}: {e}")
+            logger.warning(f"Vector index upsert failed for doc {doc.id}: {e}")
 
         logger.info(f"Document {document_id} processed: {chunk_count} chunks created")
         return True

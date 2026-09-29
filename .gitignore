@@ -4,6 +4,7 @@ __pycache__/
 db.sqlite3
 .env
 media/
+chroma_db/
 .DS_Store
 
 .idea/

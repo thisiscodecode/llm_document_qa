@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,7 +26,7 @@ SECRET_KEY = 'django-insecure-t5b*7hl2nw5(5_jqdq_#-6lp^98fhn3bl(v#-ahn(8x4tj*-yo
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -42,6 +43,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'config.middleware.RequestIDMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -81,6 +83,18 @@ DATABASES = {
     }
 }
 
+# Chroma is the derived vector store; Django's database remains the source of
+# truth for documents, chunks, users, and chat history. Set CHROMA_HOST to use a
+# server-backed deployment, or leave it empty for a local persistent database.
+CHROMA_PATH = Path(os.getenv('CHROMA_PATH', BASE_DIR / 'chroma_db'))
+CHROMA_COLLECTION = os.getenv('CHROMA_COLLECTION', 'document_chunks')
+CHROMA_HOST = os.getenv('CHROMA_HOST', '')
+CHROMA_PORT = int(os.getenv('CHROMA_PORT', '8000'))
+CHROMA_SSL = os.getenv('CHROMA_SSL', 'false').lower() in ('1', 'true', 'yes')
+CHROMA_TENANT = os.getenv('CHROMA_TENANT', 'default_tenant')
+CHROMA_DATABASE = os.getenv('CHROMA_DATABASE', 'default_database')
+CHROMA_BATCH_SIZE = int(os.getenv('CHROMA_BATCH_SIZE', '128'))
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -117,3 +131,50 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name} [{request_id}] {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+        'simple': {
+            'format': '{levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'filters': {
+        'request_id': {
+            '()': 'config.middleware.RequestIDFilter',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+            'filters': ['request_id'],
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'documents': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+    },
+}

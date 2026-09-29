@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from .services import generate_answer
+from documents.services import generate_answer
 
 
 class GenerateAnswerTests(TestCase):
@@ -15,12 +15,18 @@ class GenerateAnswerTests(TestCase):
             "I could not find relevant information in the uploaded documents.",
         )
         self.assertEqual(result["context"], "")
-        self.assertEqual(result["search_method"], "simple")
+        self.assertEqual(result["search_method"], "hybrid")
 
     @patch("documents.services._get_llm", return_value=None)
     @patch(
         "documents.services.retrieve_relevant_chunks",
-        return_value=[SimpleNamespace(content="Python and Django")],
+        return_value=[SimpleNamespace(
+            id=1,
+            content="Python and Django",
+            document=SimpleNamespace(title="Test"),
+            chunk_index=0,
+            page_number=1,
+        )],
     )
     def test_returns_config_error_when_llm_not_configured(self, _mock_chunks, _mock_llm):
         result = generate_answer("What framework?", search_method="bm25")
